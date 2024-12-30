@@ -27,8 +27,12 @@ pub const Node = union(enum) {
     ConstDecl: struct { ident: *Node, type: ?*Node, value: *Node },
     VarDecl: struct { ident: *Node, type: ?*Node, value: *Node },
 
-    Paramater: struct { ident: *Node, type: ?*Node },
-    FnDecl: struct { params: std.ArrayList(*Node), Ret: ?*Node },
+    Paramater: struct { ident: *Node, type: *Node },
+    FnDecl: struct {
+        params: std.ArrayList(*Node),
+        ret: *Node,
+        block: *Node,
+    },
     FnCall: struct { @"fn": *Node, args: std.ArrayList(*Node) },
 
     Dot: struct { lhs: *Node, ident: *Node },
@@ -89,13 +93,13 @@ fn printNode(self: *Self, node: NodeRef, start_indent: u32) void {
         },
 
         .Binary => |v| {
+            printIndent(indent, "\"{s}\"", .{v.Op.text});
             self.printNode(v.lhs, indent);
             self.printNode(v.rhs, indent);
-            printIndent(indent, "{s}", .{@tagName(v.Op.ty)});
         },
         .Unary => |v| {
+            printIndent(indent, "\"{s}\"", .{v.Op.text});
             self.printNode(v.node, indent);
-            printIndent(indent, "{s}", .{@tagName(v.Op.ty)});
         },
 
         .Float => |v| printIndent(indent, "{s}", .{v}),
@@ -105,9 +109,7 @@ fn printNode(self: *Self, node: NodeRef, start_indent: u32) void {
 
         .Ident => |v| printIndent(indent, "{s}", .{v.text}),
 
-        .Scope => |lst| {
-            for (lst.items) |n| self.printNode(n, indent);
-        },
+        .Scope => |lst| for (lst.items) |n| self.printNode(n, indent),
 
         .ConstDecl => |v| {
             self.printNode(v.ident, indent);
@@ -130,15 +132,12 @@ fn printNode(self: *Self, node: NodeRef, start_indent: u32) void {
 
         .Paramater => |v| {
             self.printNode(v.ident, indent);
-            if (v.type) |ty| {
-                self.printNode(ty, indent);
-            }
+            self.printNode(v.type, indent);
         },
         .FnDecl => |v| {
             for (v.params.items) |n| self.printNode(n, indent);
-            if (v.Ret) |ty| {
-                self.printNode(ty, indent);
-            }
+            self.printNode(v.ret, indent);
+            self.printNode(v.block, indent);
         },
         .FnCall => |v| {
             self.printNode(v.@"fn", indent);
@@ -195,13 +194,14 @@ fn freeNode(self: *Self, node: NodeRef) void {
 
         .Paramater => |v| {
             self.freeNode(v.ident);
-            if (v.type) |t| self.freeNode(t);
+            self.freeNode(v.type);
         },
         .FnDecl => |v| {
             for (v.params.items) |n| self.freeNode(n);
             v.params.deinit();
 
-            if (v.Ret) |r| self.freeNode(r);
+            self.freeNode(v.ret);
+            self.freeNode(v.block);
         },
         .FnCall => |v| {
             for (v.args.items) |n| self.freeNode(n);

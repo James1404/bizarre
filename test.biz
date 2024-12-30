@@ -1,1 +1,10 @@
+const a = 25;
+const b = a * a;
+
 const println = 25 + 2;
+
+const factorial = fn(n: int) int {
+      return if x < 2 then 1 else n * factorial(n - 1);
+};
+
+const r = compile fn()

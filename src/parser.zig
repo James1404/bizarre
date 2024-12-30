@@ -31,7 +31,11 @@ pub fn deinit(self: *Self) void {
 fn alloc(self: *Self, node: AST.Node) AST.NodeRef {
     switch (node) {
         .Error => |err| {
-            std.debug.panic("Token: \"{s}\", err -> {s}", .{ err.token.text, err.msg });
+            std.debug.panic("Error [{d}, {d}]: {s}", .{
+                err.token.line,
+                err.token.offset,
+                err.msg,
+            });
         },
         else => {},
     }
@@ -77,8 +81,53 @@ fn parse_ident(self: *Self) AST.NodeRef {
     } });
 }
 
+// fn parse_if(self: *Self) AST.NodeRef {
+//     const start = self.getCurrent();
+
+//     if (self.advanceIf(.If)) |_| {
+//         const cond = self.parse_expr();
+
+//         if (self.advanceIf(.Then)) |_| {
+//             const true = self.parse_expr();
+
+//             if (self.advanceIf(.Else)) |_| {
+//                 const false = self.parse_expr();
+
+//                 return self.alloc(.{ .If = .{
+//                     .cond = cond,
+//                     .true = true,
+//                     .false = false,
+//                 } });
+//             }
+//         }
+//     }
+
+//     return self.alloc(.{ .Error = .{
+//         .msg = "Failed to parse if statement",
+//         .token = start,
+//     } });
+// }
+
 fn parse_fnDecl(self: *Self) AST.NodeRef {
     const start = self.getCurrent();
+
+    if (self.advanceIf(.Fn)) |_| {
+        if (self.advanceIf(.LParen)) |_| {
+            const params = std.ArrayList(AST.NodeRef).init(self.allocator);
+
+            while (self.advanceIf(.RParen) == null) {}
+
+            const ret = self.parse_value();
+
+            const block = self.parse_scope();
+
+            return self.alloc(.{ .FnDecl = .{
+                .params = params,
+                .ret = ret,
+                .block = block,
+            } });
+        }
+    }
 
     return self.alloc(.{ .Error = .{
         .msg = "Not Implemented",
@@ -98,8 +147,8 @@ fn parse_value(self: *Self) AST.NodeRef {
         .False => self.alloc(.{ .Bool = false }),
         .Ident => self.alloc(.{ .Ident = tok }),
         .Fn => self.parse_fnDecl(),
+        .If => self.parse_if(),
         .LParen => node: {
-            self.advance();
             const expr = self.parse_expr();
             if (self.advanceIf(.RParen)) |_| {
                 break :node expr;
@@ -251,6 +300,18 @@ fn parse_stmt(self: *Self) AST.NodeRef {
         .msg = "Statement must end with a semicolon",
         .token = start,
     } });
+}
+
+fn parse_scope(self: *Self) AST.NodeRef {
+    // todo
+    var list = std.ArrayList(AST.NodeRef).init(self.allocator);
+    while (!self.eof()) {
+        list.append(self.parse_stmt()) catch |err| {
+            @panic(@errorName(err));
+        };
+    }
+
+    return self.alloc(.{ .Scope = list });
 }
 
 fn parse_toplevel(self: *Self) AST.NodeRef {
