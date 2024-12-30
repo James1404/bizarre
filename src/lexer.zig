@@ -131,15 +131,25 @@ pub fn run(self: *Self) std.ArrayList(Token) {
 }
 
 pub fn append(self: *Self, out: *Token.List, ty: Token.Ty) void {
-    out.append(Token{
+    const text = self.src[self.start..self.pos];
+    var finalTy = ty;
+    if (ty == .Ident) {
+        if (Token.Keywords.get(text)) |t| {
+            finalTy = t;
+        }
+    }
+
+    const token = Token{
         .line = self.line,
         .pos = self.start,
         .offset = self.start_offset,
 
-        .text = self.src[self.start..self.pos],
+        .text = text,
 
-        .ty = ty,
-    }) catch |err| {
+        .ty = finalTy,
+    };
+
+    out.append(token) catch |err| {
         @panic(@errorName(err));
     };
 }

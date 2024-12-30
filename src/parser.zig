@@ -2,7 +2,8 @@ const std = @import("std");
 
 const AST = @import("ast.zig");
 const Token = @import("token.zig");
-const Log = @import("log.zig");
+
+allocator: std.mem.Allocator,
 
 src: Token.List,
 pos: usize,
@@ -11,13 +12,15 @@ ast: AST,
 const Self = @This();
 
 pub fn make(
-    parent_allocator: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     src: Token.List,
 ) Self {
     return Self{
+        .allocator = allocator,
+
         .src = src,
         .pos = 0,
-        .ast = .make(parent_allocator),
+        .ast = .make(allocator),
     };
 }
 
@@ -25,11 +28,14 @@ pub fn deinit(self: *Self) void {
     self.ast.deinit();
 }
 
-fn allocator(self: *Self) std.mem.Allocator {
-    return self.ast.arena.allocator();
-}
+fn alloc(self: *Self, node: AST.Node) AST.NodeRef {
+    switch (node) {
+        .Error => |err| {
+            std.debug.panic("Token: \"{s}\", err -> {s}", .{ err.token.text, err.msg });
+        },
+        else => {},
+    }
 
-fn alloc(self: *Self, node: AST.Node) *AST.Node {
     return self.ast.alloc(node);
 }
 
@@ -41,18 +47,17 @@ fn advance(self: *Self) void {
     self.pos += 1;
 }
 
-fn current(self: *Self) Token {
+fn getCurrent(self: *Self) Token {
     return self.src.items[self.pos];
 }
 
 fn match(self: *Self, expected: Token.Ty) bool {
-    return self.current().ty == expected;
+    return self.getCurrent().ty == expected;
 }
 
 fn advanceIf(self: *Self, expected: Token.Ty) ?Token {
-    Log.info("Expected: {s}", .{@tagName(expected)});
     if (self.match(expected)) {
-        const tok = self.current();
+        const tok = self.getCurrent();
         self.advance();
         return tok;
     }
@@ -60,14 +65,29 @@ fn advanceIf(self: *Self, expected: Token.Ty) ?Token {
     return null;
 }
 
-fn parse_ident(self: *Self) *AST.Node {
-    const tok = self.current();
-    self.advance();
-    return self.alloc(.{ .Ident = tok });
+fn parse_ident(self: *Self) AST.NodeRef {
+    const tok = self.getCurrent();
+
+    return if (tok.ty == .Ident) node: {
+        self.advance();
+        break :node self.alloc(.{ .Ident = tok });
+    } else self.alloc(.{ .Error = .{
+        .msg = "Unable to parse ident",
+        .token = tok,
+    } });
 }
 
-fn parse_value(self: *Self) *AST.Node {
-    const tok = self.current();
+fn parse_fnDecl(self: *Self) AST.NodeRef {
+    const start = self.getCurrent();
+
+    return self.alloc(.{ .Error = .{
+        .msg = "Not Implemented",
+        .token = start,
+    } });
+}
+
+fn parse_value(self: *Self) AST.NodeRef {
+    const tok = self.getCurrent();
     self.advance();
 
     return switch (tok.ty) {
@@ -77,6 +97,19 @@ fn parse_value(self: *Self) *AST.Node {
         .True => self.alloc(.{ .Bool = true }),
         .False => self.alloc(.{ .Bool = false }),
         .Ident => self.alloc(.{ .Ident = tok }),
+        .Fn => self.parse_fnDecl(),
+        .LParen => node: {
+            self.advance();
+            const expr = self.parse_expr();
+            if (self.advanceIf(.RParen)) |_| {
+                break :node expr;
+            }
+
+            break :node self.alloc(.{ .Error = .{
+                .msg = "'(' Needs a closing ')'",
+                .token = tok,
+            } });
+        },
         else => self.alloc(.{ .Error = .{
             .msg = "Unable to parse value",
             .token = tok,
@@ -84,16 +117,47 @@ fn parse_value(self: *Self) *AST.Node {
     };
 }
 
-fn parse_expr(self: *Self) *AST.Node {
-    Log.info("expr", .{});
+fn expression(
+    self: *Self,
+    lhs: AST.NodeRef,
+    min_precedence: i32,
+) AST.NodeRef {
+    var final = lhs;
+    var current = self.getCurrent();
 
-    return self.parse_value();
+    while (Token.precendence(current) >= min_precedence) {
+        const op = current;
+        self.advance();
+
+        var rhs = self.parse_value();
+
+        current = self.getCurrent();
+
+        while (Token.precendence(current) > Token.precendence(op)) {
+            rhs = self.expression(
+                rhs,
+                Token.precendence(op) + @as(i32, if (Token.precendence(current) > Token.precendence(op))
+                    1
+                else
+                    0),
+            );
+        }
+
+        final = self.alloc(.{ .Binary = .{
+            .lhs = final,
+            .Op = op,
+            .rhs = rhs,
+        } });
+    }
+    return final;
 }
 
-fn parse_if(self: *Self) *AST.Node {
-    Log.info("if", .{});
+fn parse_expr(self: *Self) AST.NodeRef {
+    return self.expression(self.parse_value(), 0);
+}
 
-    const start = self.current();
+fn parse_if(self: *Self) AST.NodeRef {
+    const start = self.getCurrent();
 
     if (self.advanceIf(.If)) |_| {
         const cond = self.parse_expr();
@@ -117,14 +181,12 @@ fn parse_if(self: *Self) *AST.Node {
     } });
 }
 
-fn parse_const(self: *Self) *AST.Node {
-    Log.info("const", .{});
-
-    const start = self.current();
+fn parse_const(self: *Self) AST.NodeRef {
+    const start = self.getCurrent();
 
     if (self.advanceIf(.Const)) |_| {
         const ident = self.parse_ident();
-        const @"type": ?*AST.Node = if (self.advanceIf(.Colon)) |_|
+        const @"type": ?AST.NodeRef = if (self.advanceIf(.Colon)) |_|
             self.parse_expr()
         else
             null;
@@ -146,14 +208,12 @@ fn parse_const(self: *Self) *AST.Node {
     } });
 }
 
-fn parse_var(self: *Self) *AST.Node {
-    Log.info("var", .{});
-
-    const start = self.current();
+fn parse_var(self: *Self) AST.NodeRef {
+    const start = self.getCurrent();
 
     if (self.advanceIf(.Var)) |_| {
         const ident = self.parse_ident();
-        const @"type": ?*AST.Node = if (self.advanceIf(.Colon)) |_| ty: {
+        const @"type": ?AST.NodeRef = if (self.advanceIf(.Colon)) |_| ty: {
             break :ty self.parse_expr();
         } else null;
 
@@ -174,26 +234,27 @@ fn parse_var(self: *Self) *AST.Node {
     } });
 }
 
-fn parse_stmt(self: *Self) *AST.Node {
-    const start = self.current();
+fn parse_stmt(self: *Self) AST.NodeRef {
+    const start = self.getCurrent();
 
-    Log.info("Statement: {s}", .{start.text});
-
-    return switch (start.ty) {
+    const stmt = switch (start.ty) {
         .Const => self.parse_const(),
         .Var => self.parse_var(),
-        else => node: {
-            self.advance();
-            break :node self.alloc(.{ .Error = .{
-                .msg = "Failed to parse statement",
-                .token = start,
-            } });
-        },
+        else => self.parse_value(),
     };
+
+    if (self.advanceIf(.Semicolon)) |_| {
+        return stmt;
+    }
+
+    return self.alloc(.{ .Error = .{
+        .msg = "Statement must end with a semicolon",
+        .token = start,
+    } });
 }
 
-fn parse_toplevel(self: *Self) *AST.Node {
-    var list = std.ArrayList(*AST.Node).init(self.allocator());
+fn parse_toplevel(self: *Self) AST.NodeRef {
+    var list = std.ArrayList(AST.NodeRef).init(self.allocator);
     while (!self.eof()) {
         list.append(self.parse_stmt()) catch |err| {
             @panic(@errorName(err));

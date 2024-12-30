@@ -62,6 +62,8 @@ pub const Ty = enum {
 
     And,
     Or,
+
+    Fn,
 };
 
 ty: Ty,
@@ -88,6 +90,19 @@ pub const Keywords = std.StaticStringMap(Ty).initComptime(.{
 
     .{ "and", .And },
     .{ "or", .Or },
+
+    .{ "fn", .Fn },
 });
+
+pub fn precendence(tok: @This()) i32 {
+    return switch (tok.ty) {
+        .Plus => 1,
+        .Minus => 2,
+        .Asterix => 3,
+        .Slash => 4,
+        else => -1,
+    };
+}
+pub const Precendence = std.AutoHashMap(Ty, i32);
 
 pub const List = std.ArrayList(@This());

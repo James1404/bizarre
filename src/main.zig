@@ -21,22 +21,22 @@ pub fn main() !void {
     const tokens = lexer.run();
     defer tokens.deinit();
 
+    // std.debug.print("--- Tokens: len {d}\n", .{tokens.items.len});
+    // for (tokens.items) |token| {
+    //     std.debug.print("- [{d}, {d}] {s} :: \"{s}\"\n", .{
+    //         token.line,
+    //         token.offset,
+    //         @tagName(token.ty),
+    //         token.text,
+    //     });
+    // }
+
     var parser = Parser.make(allocator, tokens);
     defer parser.deinit();
 
-    Log.info("Run parser", .{});
-
     parser.run();
 
-    std.debug.print("--- Tokens: len {d}\n", .{tokens.items.len});
-    for (tokens.items) |token| {
-        std.debug.print("- [{d}, {d}] {s} :: \"{s}\"\n", .{
-            token.line,
-            token.offset,
-            @tagName(token.ty),
-            token.text,
-        });
-    }
+    parser.ast.print();
 }
 
 test {
