@@ -67,6 +67,7 @@ pub const Ty = enum {
 
     Fn,
     Comptime,
+    Extern,
 
     Interface,
     Struct,
@@ -101,6 +102,7 @@ pub const Keywords = std.StaticStringMap(Ty).initComptime(.{
 
     .{ "fn", .Fn },
     .{ "comptime", .Comptime },
+    .{ "extern", .Extern },
 
     .{ "interface", .Interface },
     .{ "struct", .Struct },

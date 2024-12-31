@@ -28,7 +28,7 @@ const r = comptime fn() void {};
 
 const x = fn() int {
       return 25;
-};
+} ();
 
 /*
 Types:

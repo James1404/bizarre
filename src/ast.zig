@@ -47,6 +47,7 @@ pub const Node = union(enum) {
     MatchBranch: struct { pattern: *Node, value: *Node },
 
     Comptime: NodeRef,
+    Extern: NodeRef,
 
     FnType: struct {
         params: std.ArrayList(*Node),
@@ -189,6 +190,7 @@ fn printNode(self: *Self, node: NodeRef, start_indent: u32) void {
         },
 
         .Comptime => |n| self.printNode(n, indent),
+        .Extern => |n| self.printNode(n, indent),
 
         .FnType => |v| {
             self.printNode(v.ret, indent);
@@ -279,6 +281,7 @@ fn freeNode(self: *Self, node: NodeRef) void {
         },
 
         .Comptime => |n| self.freeNode(n),
+        .Extern => |n| self.freeNode(n),
 
         .FnType => |v| {
             for (v.params.items) |n| self.freeNode(n);

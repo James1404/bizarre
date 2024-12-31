@@ -73,30 +73,6 @@ fn advanceIf(self: *Self, expected: Token.Ty) ?Token {
 // fn parse_if(self: *Self) AST.NodeRef {
 //     const start = self.getCurrent();
 
-//     if (self.advanceIf(.If)) |_| {
-//         const cond = self.parse_expr();
-
-//         if (self.advanceIf(.Then)) |_| {
-//             const true = self.parse_expr();
-
-//             if (self.advanceIf(.Else)) |_| {
-//                 const false = self.parse_expr();
-
-//                 return self.alloc(.{ .If = .{
-//                     .cond = cond,
-//                     .true = true,
-//                     .false = false,
-//                 } });
-//             }
-//         }
-//     }
-
-//     return self.alloc(.{ .Error = .{
-//         .msg = "Failed to parse if statement",
-//         .token = start,
-//     } });
-// }
-
 fn parse_fnDecl(self: *Self) AST.NodeRef {
     const start = self.getCurrent();
 
@@ -196,6 +172,10 @@ fn parse_value(self: *Self) AST.NodeRef {
             self.advance();
             break :node self.alloc(.{ .Comptime = self.parse_expr() });
         },
+        .Extern => node: {
+            self.advance();
+            break :node self.alloc(.{ .Extern = self.parse_expr() });
+        },
         .Interface => self.parse_interface(),
         .Struct => self.parse_struct(),
         .LParen => node: {
@@ -222,6 +202,8 @@ fn parse_value(self: *Self) AST.NodeRef {
         var args = std.ArrayList(AST.NodeRef).init(self.allocator);
 
         while (true) {
+            if (self.match(.RParen)) break;
+
             const arg = self.parse_expr();
 
             args.append(arg) catch |err| {

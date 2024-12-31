@@ -25,6 +25,8 @@
                 pkg-config
 
                 lldb
+                
+                libffi
               ];
             }
           );
