@@ -57,6 +57,8 @@ pub const Ty = enum {
     For,
     While,
 
+    Return,
+
     Const,
     Var,
 
@@ -64,6 +66,10 @@ pub const Ty = enum {
     Or,
 
     Fn,
+    Comptime,
+
+    Interface,
+    Struct,
 };
 
 ty: Ty,
@@ -85,6 +91,8 @@ pub const Keywords = std.StaticStringMap(Ty).initComptime(.{
     .{ "for", .For },
     .{ "while", .While },
 
+    .{ "return", .Return },
+
     .{ "const", .Const },
     .{ "var", .Var },
 
@@ -92,6 +100,10 @@ pub const Keywords = std.StaticStringMap(Ty).initComptime(.{
     .{ "or", .Or },
 
     .{ "fn", .Fn },
+    .{ "comptime", .Comptime },
+
+    .{ "interface", .Interface },
+    .{ "struct", .Struct },
 });
 
 pub fn precendence(tok: @This()) i32 {
@@ -100,6 +112,15 @@ pub fn precendence(tok: @This()) i32 {
         .Minus => 2,
         .Asterix => 3,
         .Slash => 4,
+
+        .Less,
+        .LessEq,
+        .Greater,
+        .GreaterEq,
+        .EqualEqual,
+        .NotEqual,
+        => 4,
+
         else => -1,
     };
 }

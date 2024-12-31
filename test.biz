@@ -7,4 +7,40 @@ const factorial = fn(n: int) int {
       return if x < 2 then 1 else n * factorial(n - 1);
 };
 
-const r = compile fn()
+const Allocator = interface {
+     alloc: fn(T: type) ptr(type);
+     dealloc: fn(ptr: ptr(any)) void;
+};
+
+const ArenaAllocator = struct {
+      alloc = fn(T: type) ptr(type) {};
+      dealloc = fn(ptr: ptr(any)) void {};
+};
+
+const Vector = comptime fn(T: type) type {
+      return struct {
+             items: ptr(T);
+             len: usize;
+      };
+};
+
+const r = comptime fn() void {};
+
+const x = fn() int {
+      return 25;
+};
+
+/*
+Types:
+ - i8, i16, i32, i64, isize,
+ - u8, u16, u32, u64, usize,
+ - f32, f64,
+ - bool,
+ - string,
+ - Array: [type;size],
+ - Slice: [type],
+ - Tuple: (i32, f32, string, bool, struct {}),
+ - any,
+ - comptime only types:
+   - type,
+*/

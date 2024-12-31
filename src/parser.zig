@@ -31,9 +31,10 @@ pub fn deinit(self: *Self) void {
 fn alloc(self: *Self, node: AST.Node) AST.NodeRef {
     switch (node) {
         .Error => |err| {
-            std.debug.panic("Error [{d}, {d}]: {s}", .{
+            std.debug.panic("Error [{d}, {d}] \"{s}\": {s}", .{
                 err.token.line,
                 err.token.offset,
+                err.token.text,
                 err.msg,
             });
         },
@@ -69,18 +70,6 @@ fn advanceIf(self: *Self, expected: Token.Ty) ?Token {
     return null;
 }
 
-fn parse_ident(self: *Self) AST.NodeRef {
-    const tok = self.getCurrent();
-
-    return if (tok.ty == .Ident) node: {
-        self.advance();
-        break :node self.alloc(.{ .Ident = tok });
-    } else self.alloc(.{ .Error = .{
-        .msg = "Unable to parse ident",
-        .token = tok,
-    } });
-}
-
 // fn parse_if(self: *Self) AST.NodeRef {
 //     const start = self.getCurrent();
 
@@ -113,42 +102,105 @@ fn parse_fnDecl(self: *Self) AST.NodeRef {
 
     if (self.advanceIf(.Fn)) |_| {
         if (self.advanceIf(.LParen)) |_| {
-            const params = std.ArrayList(AST.NodeRef).init(self.allocator);
+            var params = std.ArrayList(AST.NodeRef).init(self.allocator);
 
-            while (self.advanceIf(.RParen) == null) {}
+            while (true) {
+                if (self.match(.RParen)) break;
 
-            const ret = self.parse_value();
+                const ident = self.parse_ident();
 
-            const block = self.parse_scope();
+                if (self.advanceIf(.Colon) == null) return self.alloc(.{ .Error = .{
+                    .msg = "Argument needs a type with ':'",
+                    .token = start,
+                } });
 
-            return self.alloc(.{ .FnDecl = .{
+                const @"type" = self.parse_expr();
+
+                params.append(self.alloc(.{ .Paramater = .{
+                    .ident = ident,
+                    .type = @"type",
+                } })) catch |err| {
+                    @panic(@errorName(err));
+                };
+
+                if (self.advanceIf(.Colon) == null) break;
+            }
+
+            if (self.advanceIf(.RParen) == null) {
+                return self.alloc(.{ .Error = .{
+                    .msg = "Function paramater list requires closing brace",
+                    .token = start,
+                } });
+            }
+
+            const ret = self.parse_expr();
+
+            return if (self.match(.LBrace)) node: {
+                const block = self.parse_scope();
+
+                break :node self.alloc(.{ .FnDecl = .{
+                    .params = self.alloc(.{
+                        .ParamaterList = params,
+                    }),
+                    .ret = ret,
+                    .block = block,
+                } });
+            } else self.alloc(.{ .FnType = .{
                 .params = params,
                 .ret = ret,
-                .block = block,
             } });
         }
     }
 
     return self.alloc(.{ .Error = .{
-        .msg = "Not Implemented",
+        .msg = "Could'nt parse function decleration",
         .token = start,
     } });
 }
 
+fn parse_ident(self: *Self) AST.NodeRef {
+    const start = self.getCurrent();
+
+    if (start.ty == .Ident) {
+        self.advance();
+
+        return self.alloc(.{
+            .Ident = start,
+        });
+    }
+
+    return self.alloc(.{ .Error = .{
+        .msg = "Unable to parse identifier",
+        .token = start,
+    } });
+}
+
+fn advanceAlloc(self: *Self, node: AST.Node) AST.NodeRef {
+    self.advance();
+    return self.alloc(node);
+}
+
 fn parse_value(self: *Self) AST.NodeRef {
     const tok = self.getCurrent();
-    self.advance();
 
-    return switch (tok.ty) {
-        .String => self.alloc(.{ .String = tok.text }),
-        .Float => self.alloc(.{ .Float = tok.text }),
-        .Int => self.alloc(.{ .Int = tok.text }),
-        .True => self.alloc(.{ .Bool = true }),
-        .False => self.alloc(.{ .Bool = false }),
-        .Ident => self.alloc(.{ .Ident = tok }),
+    const value = switch (tok.ty) {
+        .String => self.advanceAlloc(.{ .String = tok.text }),
+        .Float => self.advanceAlloc(.{ .Float = tok.text }),
+        .Int => self.advanceAlloc(.{ .Int = tok.text }),
+        .True => self.advanceAlloc(.{ .Bool = true }),
+        .False => self.advanceAlloc(.{ .Bool = false }),
+        .Ident => self.parse_ident(),
         .Fn => self.parse_fnDecl(),
         .If => self.parse_if(),
+        .Comptime => node: {
+            self.advance();
+            break :node self.alloc(.{ .Comptime = self.parse_expr() });
+        },
+        .Interface => self.parse_interface(),
+        .Struct => self.parse_struct(),
         .LParen => node: {
+            self.advance();
+
             const expr = self.parse_expr();
             if (self.advanceIf(.RParen)) |_| {
                 break :node expr;
@@ -159,11 +211,40 @@ fn parse_value(self: *Self) AST.NodeRef {
                 .token = tok,
             } });
         },
-        else => self.alloc(.{ .Error = .{
+        .LBrace => self.parse_scope(),
+        else => return self.advanceAlloc(.{ .Error = .{
             .msg = "Unable to parse value",
             .token = tok,
         } }),
     };
+
+    if (self.advanceIf(.LParen)) |_| {
+        var args = std.ArrayList(AST.NodeRef).init(self.allocator);
+
+        while (true) {
+            const arg = self.parse_expr();
+
+            args.append(arg) catch |err| {
+                @panic(@errorName(err));
+            };
+
+            if (self.advanceIf(.Colon) == null) break;
+        }
+
+        if (self.advanceIf(.RParen) == null) {
+            return self.alloc(.{ .Error = .{
+                .msg = "Function call requires closing brace",
+                .token = tok,
+            } });
+        }
+
+        return self.alloc(.{ .FnCall = .{
+            .@"fn" = value,
+            .args = args,
+        } });
+    }
+
+    return value;
 }
 
 fn expression(
@@ -205,6 +286,109 @@ fn parse_expr(self: *Self) AST.NodeRef {
     return self.expression(self.parse_value(), 0);
 }
 
+fn parse_field(self: *Self) AST.NodeRef {
+    const start = self.getCurrent();
+
+    const ident = self.parse_ident();
+    const @"type": ?AST.NodeRef = if (self.advanceIf(.Colon)) |_|
+        self.parse_value()
+    else
+        null;
+
+    const default: ?AST.NodeRef = if (self.advanceIf(.Equal)) |_| node: {
+        break :node self.parse_value();
+    } else node: {
+        if (@"type" == null) {
+            return self.alloc(.{ .Error = .{
+                .msg = "Field requires a default value or type signature",
+                .token = start,
+            } });
+        }
+
+        break :node null;
+    };
+
+    return self.alloc(.{ .Field = .{
+        .ident = ident,
+        .type = @"type",
+        .default = default,
+    } });
+}
+
+fn parse_interface(self: *Self) AST.NodeRef {
+    const start = self.getCurrent();
+
+    if (self.advanceIf(.Interface)) |_| {
+        if (self.advanceIf(.LBrace) == null) {
+            return self.alloc(.{ .Error = .{
+                .msg = "Interface expects braces",
+                .token = start,
+            } });
+        }
+
+        var fields = std.ArrayList(AST.NodeRef).init(self.allocator);
+
+        while (self.advanceIf(.RBrace) == null) {
+            fields.append(self.parse_field()) catch |err| {
+                @panic(@errorName(err));
+            };
+
+            if (self.advanceIf(.Semicolon) == null) {
+                return self.alloc(.{ .Error = .{
+                    .msg = "Each field must end with a semicolon",
+                    .token = start,
+                } });
+            }
+        }
+
+        return self.alloc(.{ .Interface = .{
+            .fields = fields,
+        } });
+    }
+
+    return self.alloc(.{ .Error = .{
+        .msg = "Unable to parse interface",
+        .token = start,
+    } });
+}
+
+fn parse_struct(self: *Self) AST.NodeRef {
+    const start = self.getCurrent();
+
+    if (self.advanceIf(.Struct)) |_| {
+        if (self.advanceIf(.LBrace) == null) {
+            return self.alloc(.{ .Error = .{
+                .msg = "Interface expects braces",
+                .token = start,
+            } });
+        }
+
+        var fields = std.ArrayList(AST.NodeRef).init(self.allocator);
+
+        while (self.advanceIf(.RBrace) == null) {
+            fields.append(self.parse_field()) catch |err| {
+                @panic(@errorName(err));
+            };
+
+            if (self.advanceIf(.Semicolon) == null) {
+                return self.alloc(.{ .Error = .{
+                    .msg = "Each field must end with a semicolon",
+                    .token = start,
+                } });
+            }
+        }
+
+        return self.alloc(.{ .Interface = .{
+            .fields = fields,
+        } });
+    }
+
+    return self.alloc(.{ .Error = .{
+        .msg = "Unable to parse struct",
+        .token = start,
+    } });
+}
+
 fn parse_if(self: *Self) AST.NodeRef {
     const start = self.getCurrent();
 
@@ -225,7 +409,7 @@ fn parse_if(self: *Self) AST.NodeRef {
     }
 
     return self.alloc(.{ .Error = .{
-        .msg = "Failed to parse const statement",
+        .msg = "Failed to parse if statement",
         .token = start,
     } });
 }
@@ -289,7 +473,13 @@ fn parse_stmt(self: *Self) AST.NodeRef {
     const stmt = switch (start.ty) {
         .Const => self.parse_const(),
         .Var => self.parse_var(),
-        else => self.parse_value(),
+        .Return => node: {
+            self.advance();
+            break :node self.alloc(.{ .Return = .{
+                .value = self.parse_expr(),
+            } });
+        },
+        else => self.parse_expr(),
     };
 
     if (self.advanceIf(.Semicolon)) |_| {
@@ -303,9 +493,17 @@ fn parse_stmt(self: *Self) AST.NodeRef {
 }
 
 fn parse_scope(self: *Self) AST.NodeRef {
-    // todo
+    const start = self.getCurrent();
+
+    if (self.advanceIf(.LBrace) == null) {
+        return self.alloc(.{ .Error = .{
+            .msg = "Block needs opening brace",
+            .token = start,
+        } });
+    }
+
     var list = std.ArrayList(AST.NodeRef).init(self.allocator);
-    while (!self.eof()) {
+    while (self.advanceIf(.RBrace) == null) {
         list.append(self.parse_stmt()) catch |err| {
             @panic(@errorName(err));
         };

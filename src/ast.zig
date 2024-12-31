@@ -27,13 +27,17 @@ pub const Node = union(enum) {
     ConstDecl: struct { ident: *Node, type: ?*Node, value: *Node },
     VarDecl: struct { ident: *Node, type: ?*Node, value: *Node },
 
-    Paramater: struct { ident: *Node, type: *Node },
+    ParamaterList: std.ArrayList(NodeRef),
+    Paramater: struct { ident: NodeRef, type: NodeRef },
+
     FnDecl: struct {
-        params: std.ArrayList(*Node),
+        params: NodeRef,
         ret: *Node,
         block: *Node,
     },
     FnCall: struct { @"fn": *Node, args: std.ArrayList(*Node) },
+
+    Return: struct { value: NodeRef },
 
     Dot: struct { lhs: *Node, ident: *Node },
 
@@ -41,6 +45,22 @@ pub const Node = union(enum) {
 
     Match: struct { value: *Node, branches: std.ArrayList(*Node) },
     MatchBranch: struct { pattern: *Node, value: *Node },
+
+    Comptime: NodeRef,
+
+    FnType: struct {
+        params: std.ArrayList(*Node),
+        ret: *Node,
+    },
+
+    Field: struct {
+        ident: NodeRef,
+        type: ?NodeRef,
+        default: ?NodeRef,
+    },
+
+    Interface: struct { fields: std.ArrayList(NodeRef) },
+    Struct: struct { fields: std.ArrayList(NodeRef) },
 };
 
 allocator: std.mem.Allocator,
@@ -130,12 +150,14 @@ fn printNode(self: *Self, node: NodeRef, start_indent: u32) void {
             self.printNode(v.value, indent);
         },
 
+        .ParamaterList => |lst| for (lst.items) |n| self.printNode(n, indent),
         .Paramater => |v| {
             self.printNode(v.ident, indent);
             self.printNode(v.type, indent);
         },
+
         .FnDecl => |v| {
-            for (v.params.items) |n| self.printNode(n, indent);
+            self.printNode(v.params, indent);
             self.printNode(v.ret, indent);
             self.printNode(v.block, indent);
         },
@@ -143,6 +165,8 @@ fn printNode(self: *Self, node: NodeRef, start_indent: u32) void {
             self.printNode(v.@"fn", indent);
             for (v.args.items) |n| self.printNode(n, indent);
         },
+
+        .Return => |v| self.printNode(v.value, indent),
 
         .Dot => |v| {
             self.printNode(v.lhs, indent);
@@ -163,6 +187,21 @@ fn printNode(self: *Self, node: NodeRef, start_indent: u32) void {
             self.printNode(v.pattern, indent);
             self.printNode(v.value, indent);
         },
+
+        .Comptime => |n| self.printNode(n, indent),
+
+        .FnType => |v| {
+            self.printNode(v.ret, indent);
+            for (v.params.items) |n| self.printNode(n, indent);
+        },
+
+        .Field => |v| {
+            self.printNode(v.ident, indent);
+            if (v.type) |n| self.printNode(n, indent);
+            if (v.default) |n| self.printNode(n, indent);
+        },
+        .Interface => |v| for (v.fields.items) |n| self.printNode(n, indent),
+        .Struct => |v| for (v.fields.items) |n| self.printNode(n, indent),
     }
 }
 
@@ -192,14 +231,17 @@ fn freeNode(self: *Self, node: NodeRef) void {
             self.freeNode(v.value);
         },
 
+        .ParamaterList => |lst| {
+            for (lst.items) |n| self.freeNode(n);
+            lst.deinit();
+        },
         .Paramater => |v| {
             self.freeNode(v.ident);
             self.freeNode(v.type);
         },
-        .FnDecl => |v| {
-            for (v.params.items) |n| self.freeNode(n);
-            v.params.deinit();
 
+        .FnDecl => |v| {
+            self.freeNode(v.params);
             self.freeNode(v.ret);
             self.freeNode(v.block);
         },
@@ -209,6 +251,8 @@ fn freeNode(self: *Self, node: NodeRef) void {
 
             self.freeNode(v.@"fn");
         },
+
+        .Return => |v| self.freeNode(v.value),
 
         .Dot => |v| {
             self.freeNode(v.lhs);
@@ -232,6 +276,29 @@ fn freeNode(self: *Self, node: NodeRef) void {
         .MatchBranch => |v| {
             self.freeNode(v.pattern);
             self.freeNode(v.value);
+        },
+
+        .Comptime => |n| self.freeNode(n),
+
+        .FnType => |v| {
+            for (v.params.items) |n| self.freeNode(n);
+            v.params.deinit();
+
+            self.freeNode(v.ret);
+        },
+
+        .Field => |v| {
+            self.freeNode(v.ident);
+            if (v.type) |n| self.freeNode(n);
+            if (v.default) |n| self.freeNode(n);
+        },
+        .Interface => |v| {
+            for (v.fields.items) |n| self.freeNode(n);
+            v.fields.deinit();
+        },
+        .Struct => |v| {
+            for (v.fields.items) |n| self.freeNode(n);
+            v.fields.deinit();
         },
 
         .Float,

@@ -59,7 +59,32 @@ pub fn run(self: *Self) std.ArrayList(Token) {
             '+' => self.appendSingle(&out, .Plus),
             '-' => self.appendSingleOrNext(&out, '>', .Arrow, .Minus),
             '*' => self.appendSingle(&out, .Asterix),
-            '/' => self.appendSingle(&out, .Minus),
+            '/' => if (self.next() == '/') {
+                while (!self.advanceIf('\n') or !self.advanceIf('\r')) {
+                    if (self.EOF()) break;
+                    self.advance();
+                }
+                self.newline();
+            } else if (self.next() == '*') {
+                self.advance();
+                self.advance();
+
+                var num: i32 = 1;
+
+                while (num > 0 and !self.EOF()) {
+                    self.advance();
+                    if (self.current() == '/' and self.next() == '*') {
+                        num += 1;
+                        self.advance();
+                    }
+
+                    if (self.current() == '*' and self.next() == '/') {
+                        num -= 1;
+                        self.advance();
+                    }
+                }
+                self.advance();
+            } else self.appendSingle(&out, .Slash),
 
             '>' => self.appendSingleOrNext(&out, '=', .GreaterEq, .Greater),
             '<' => self.appendSingleOrNext(&out, '=', .LessEq, .Less),
@@ -85,9 +110,7 @@ pub fn run(self: *Self) std.ArrayList(Token) {
             '\n', '\r' => {
                 self.advance();
 
-                self.line += 1;
-                self.offset = 1;
-                self.start_offset = self.offset;
+                self.newline();
             },
 
             ' ', '\t' => self.advance(),
@@ -154,6 +177,12 @@ pub fn append(self: *Self, out: *Token.List, ty: Token.Ty) void {
     };
 }
 
+fn newline(self: *Self) void {
+    self.line += 1;
+    self.offset = 1;
+    self.start_offset = self.offset;
+}
+
 pub fn appendSingle(self: *Self, out: *Token.List, ty: Token.Ty) void {
     self.advance();
     self.append(out, ty);
@@ -197,7 +226,9 @@ fn current(self: Self) u8 {
     return self.src[self.pos];
 }
 
-fn next(self: Self) u8 {
+fn next(self: Self) ?u8 {
+    if (self.pos + 1 >= self.src.len) return null;
+
     return self.src[self.pos + 1];
 }
 
