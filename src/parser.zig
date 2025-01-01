@@ -159,6 +159,8 @@ fn advanceAlloc(self: *Self, node: AST.Node) AST.NodeRef {
 fn parse_value(self: *Self) AST.NodeRef {
     const tok = self.getCurrent();
 
+    // TODO: Implement unary operators
+
     const value = switch (tok.ty) {
         .String => self.advanceAlloc(.{ .String = tok.text }),
         .Float => self.advanceAlloc(.{ .Float = tok.text }),
@@ -376,17 +378,16 @@ fn parse_if(self: *Self) AST.NodeRef {
 
     if (self.advanceIf(.If)) |_| {
         const cond = self.parse_expr();
-        if (self.advanceIf(.Then)) |_| {
-            const @"true" = self.parse_expr();
-            if (self.advanceIf(.Else)) |_| {
-                const @"false" = self.parse_expr();
+        const @"true" = self.parse_scope();
 
-                return self.alloc(.{ .If = .{
-                    .cond = cond,
-                    .false = @"false",
-                    .true = @"true",
-                } });
-            }
+        if (self.advanceIf(.Else)) |_| {
+            const @"false" = self.parse_scope();
+
+            return self.alloc(.{ .If = .{
+                .cond = cond,
+                .false = @"false",
+                .true = @"true",
+            } });
         }
     }
 
@@ -428,9 +429,10 @@ fn parse_var(self: *Self) AST.NodeRef {
 
     if (self.advanceIf(.Var)) |_| {
         const ident = self.parse_ident();
-        const @"type": ?AST.NodeRef = if (self.advanceIf(.Colon)) |_| ty: {
-            break :ty self.parse_expr();
-        } else null;
+        const @"type": ?AST.NodeRef = if (self.advanceIf(.Colon)) |_|
+            self.parse_expr()
+        else
+            null;
 
         if (self.advanceIf(.Equal)) |_| {
             const value = self.parse_expr();
@@ -452,26 +454,23 @@ fn parse_var(self: *Self) AST.NodeRef {
 fn parse_stmt(self: *Self) AST.NodeRef {
     const start = self.getCurrent();
 
-    const stmt = switch (start.ty) {
+    return switch (start.ty) {
         .Const => self.parse_const(),
         .Var => self.parse_var(),
         .Return => node: {
             self.advance();
-            break :node self.alloc(.{ .Return = .{
-                .value = self.parse_expr(),
-            } });
+            break :node self.alloc(.{
+                .Return = self.parse_expr(),
+            });
+        },
+        .Defer => node: {
+            self.advance();
+            break :node self.alloc(.{
+                .Defer = self.parse_expr(),
+            });
         },
         else => self.parse_expr(),
     };
-
-    if (self.advanceIf(.Semicolon)) |_| {
-        return stmt;
-    }
-
-    return self.alloc(.{ .Error = .{
-        .msg = "Statement must end with a semicolon",
-        .token = start,
-    } });
 }
 
 fn parse_scope(self: *Self) AST.NodeRef {
@@ -485,10 +484,26 @@ fn parse_scope(self: *Self) AST.NodeRef {
     }
 
     var list = std.ArrayList(AST.NodeRef).init(self.allocator);
-    while (self.advanceIf(.RBrace) == null) {
-        list.append(self.parse_stmt()) catch |err| {
-            @panic(@errorName(err));
-        };
+    while (!self.match(.RBrace)) {
+        const stmt = self.parse_stmt();
+
+        if (self.advanceIf(.Semicolon) == null) {
+            list.append(self.alloc(.{ .ImplicitReturn = stmt })) catch |err| {
+                @panic(@errorName(err));
+            };
+            break;
+        } else {
+            list.append(stmt) catch |err| {
+                @panic(@errorName(err));
+            };
+        }
+    }
+
+    if (self.advanceIf(.RBrace) == null) {
+        return self.alloc(.{ .Error = .{
+            .msg = "Expect closing brace at end of statement",
+            .token = start,
+        } });
     }
 
     return self.alloc(.{ .Scope = list });
@@ -497,9 +512,18 @@ fn parse_scope(self: *Self) AST.NodeRef {
 fn parse_toplevel(self: *Self) AST.NodeRef {
     var list = std.ArrayList(AST.NodeRef).init(self.allocator);
     while (!self.eof()) {
+        const start = self.getCurrent();
+
         list.append(self.parse_stmt()) catch |err| {
             @panic(@errorName(err));
         };
+
+        if (self.advanceIf(.Semicolon) == null) {
+            return self.alloc(.{ .Error = .{
+                .msg = "Expect semicolon after each statement",
+                .token = start,
+            } });
+        }
     }
 
     return self.alloc(.{ .Scope = list });

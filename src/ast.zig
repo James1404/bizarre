@@ -37,7 +37,8 @@ pub const Node = union(enum) {
     },
     FnCall: struct { @"fn": *Node, args: std.ArrayList(*Node) },
 
-    Return: struct { value: NodeRef },
+    Return: NodeRef,
+    ImplicitReturn: NodeRef,
 
     Dot: struct { lhs: *Node, ident: *Node },
 
@@ -62,6 +63,9 @@ pub const Node = union(enum) {
 
     Interface: struct { fields: std.ArrayList(NodeRef) },
     Struct: struct { fields: std.ArrayList(NodeRef) },
+
+    Defer: NodeRef,
+    Cast: struct { value: NodeRef, type: NodeRef },
 };
 
 allocator: std.mem.Allocator,
@@ -96,7 +100,7 @@ pub fn print(self: *Self) void {
 
 fn printIndent(indent: u32, comptime fmt: []const u8, args: anytype) void {
     const out = std.debug.print;
-    for (0..indent) |_| out("    ", .{});
+    for (0..indent) |_| out("  ", .{});
 
     out(fmt, args);
     out("\n", .{});
@@ -167,7 +171,8 @@ fn printNode(self: *Self, node: NodeRef, start_indent: u32) void {
             for (v.args.items) |n| self.printNode(n, indent);
         },
 
-        .Return => |v| self.printNode(v.value, indent),
+        .Return => |n| self.printNode(n, indent),
+        .ImplicitReturn => |n| self.printNode(n, indent),
 
         .Dot => |v| {
             self.printNode(v.lhs, indent);
@@ -204,6 +209,12 @@ fn printNode(self: *Self, node: NodeRef, start_indent: u32) void {
         },
         .Interface => |v| for (v.fields.items) |n| self.printNode(n, indent),
         .Struct => |v| for (v.fields.items) |n| self.printNode(n, indent),
+
+        .Defer => |n| self.printNode(n, indent),
+        .Cast => |v| {
+            self.printNode(v.value, indent);
+            self.printNode(v.type, indent);
+        },
     }
 }
 
@@ -254,7 +265,8 @@ fn freeNode(self: *Self, node: NodeRef) void {
             self.freeNode(v.@"fn");
         },
 
-        .Return => |v| self.freeNode(v.value),
+        .Return => |n| self.freeNode(n),
+        .ImplicitReturn => |n| self.freeNode(n),
 
         .Dot => |v| {
             self.freeNode(v.lhs);
@@ -302,6 +314,13 @@ fn freeNode(self: *Self, node: NodeRef) void {
         .Struct => |v| {
             for (v.fields.items) |n| self.freeNode(n);
             v.fields.deinit();
+        },
+
+        .Defer => |n| self.freeNode(n),
+
+        .Cast => |v| {
+            self.freeNode(v.value);
+            self.freeNode(v.type);
         },
 
         .Float,

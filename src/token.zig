@@ -71,6 +71,10 @@ pub const Ty = enum {
 
     Interface,
     Struct,
+
+    Defer,
+
+    As,
 };
 
 ty: Ty,
@@ -106,6 +110,10 @@ pub const Keywords = std.StaticStringMap(Ty).initComptime(.{
 
     .{ "interface", .Interface },
     .{ "struct", .Struct },
+
+    .{ "defer", .Defer },
+
+    .{ "as", .As },
 });
 
 pub fn precendence(tok: @This()) i32 {

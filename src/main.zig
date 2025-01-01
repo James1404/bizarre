@@ -2,6 +2,7 @@ const std = @import("std");
 const Lexer = @import("lexer.zig");
 const Parser = @import("parser.zig");
 const Log = @import("log.zig");
+const Bytecode = @import("bytecode.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -21,15 +22,15 @@ pub fn main() !void {
     const tokens = lexer.run();
     defer tokens.deinit();
 
-    // std.debug.print("--- Tokens: len {d}\n", .{tokens.items.len});
-    // for (tokens.items) |token| {
-    //     std.debug.print("- [{d}, {d}] {s} :: \"{s}\"\n", .{
-    //         token.line,
-    //         token.offset,
-    //         @tagName(token.ty),
-    //         token.text,
-    //     });
-    // }
+    std.debug.print("--- Tokens: len {d}\n", .{tokens.items.len});
+    for (tokens.items) |token| {
+        std.debug.print("- [{d}, {d}] {s} :: \"{s}\"\n", .{
+            token.line,
+            token.offset,
+            @tagName(token.ty),
+            token.text,
+        });
+    }
 
     var parser = Parser.make(allocator, tokens);
     defer parser.deinit();
@@ -37,6 +38,18 @@ pub fn main() !void {
     parser.run();
 
     parser.ast.print();
+
+    var program = Bytecode.Program.make(allocator);
+    defer program.deinit();
+
+    if (parser.ast.root) |root| {
+        program.emit(root);
+
+        program.print();
+    }
+
+    var vm = Bytecode.VM.make(allocator, program);
+    defer vm.deinit();
 }
 
 test {
