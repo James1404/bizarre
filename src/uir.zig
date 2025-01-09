@@ -90,13 +90,6 @@ pub const Inst = union(enum) {
 
     call: Location,
 
-    begin_function,
-    end_function,
-    @"return": Ref,
-
-    goto: Location,
-    goto_if: struct { value: Ref, to: Location },
-
     value: struct { addr: Ref, value: Value },
     builtin: Builtin,
 };
@@ -145,6 +138,7 @@ pub const Terminator = union(enum) {
         patterns: std.ArrayList(Value),
     },
     goto: Location,
+    @"return": Ref,
 };
 
 pub const CFG = struct {
@@ -200,15 +194,17 @@ allocator: Allocator,
 functions: std.ArrayList(Fn),
 scopes: std.ArrayList(Scope),
 current_scope: ScopeIndex,
+ast: AST,
 
 const Self = @This();
 
-pub fn make(allocator: Allocator) Self {
+pub fn make(allocator: Allocator, ast: AST) Self {
     const self = Self{
         .allocator = allocator,
         .functions = .init(allocator),
         .scopes = .init(allocator),
         .current_scope = @enumFromInt(0),
+        .ast = ast,
     };
 
     const toplevel = Scope.make(self.allocator);
@@ -223,7 +219,12 @@ pub fn make(allocator: Allocator) Self {
     return self;
 }
 
-pub fn down(self: *Self) void {
+pub fn deinit(self: *Self) void {
+    self.functions.deinit();
+    self.scopes.deinit();
+}
+
+fn down(self: *Self) void {
     const current = self.get_scope(self.current_scope);
 
     const child = Scope.makeWithParent(self.allocator, self.current_scope);
@@ -240,7 +241,7 @@ pub fn down(self: *Self) void {
     self.current_scope = child_idx;
 }
 
-pub fn up(self: *Self) void {
+fn up(self: *Self) void {
     const current = self.get_scope(self.current_scope);
 
     if (current.parent) |parent| {
@@ -248,6 +249,10 @@ pub fn up(self: *Self) void {
     }
 }
 
-pub fn get_scope(self: *Self, idx: ScopeIndex) *Scope {
+fn get_scope(self: *Self, idx: ScopeIndex) *Scope {
     return &self.scopes.items[idx];
+}
+
+pub fn run(self: *Self) void {
+    _ = self;
 }

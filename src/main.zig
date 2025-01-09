@@ -1,8 +1,6 @@
 const std = @import("std");
 const Lexer = @import("lexer.zig");
 const Parser = @import("parser.zig");
-const Log = @import("log.zig");
-const Bytecode = @import("bytecode.zig");
 const UIR = @import("uir.zig");
 
 pub fn main() !void {
@@ -40,19 +38,8 @@ pub fn main() !void {
 
     parser.ast.print();
 
-    try UIR.do(allocator, parser.ast);
-
-    var program = Bytecode.Program.make(allocator);
-    defer program.deinit();
-
-    if (parser.ast.root) |root| {
-        program.emit(root);
-
-        program.print();
-    }
-
-    var vm = Bytecode.VM.make(allocator, program);
-    defer vm.deinit();
+    const uir = UIR.make(allocator, parser.ast);
+    defer uir.deinit();
 }
 
 test {
