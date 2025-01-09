@@ -56,8 +56,21 @@ fn getCurrent(self: *Self) Token {
     return self.src.items[self.pos];
 }
 
+fn getNext(self: *Self) ?Token {
+    const idx = self.pos + 1;
+    return if (idx > self.src.items.len)
+        null
+    else
+        self.src.items[idx];
+}
+
 fn match(self: *Self, expected: Token.Ty) bool {
     return self.getCurrent().ty == expected;
+}
+
+fn matchNext(self: *Self, expected: Token.Ty) bool {
+    const next = self.getNext();
+    return if (next) |tok| tok.ty == expected else false;
 }
 
 fn advanceIf(self: *Self, expected: Token.Ty) ?Token {
@@ -160,6 +173,13 @@ fn parse_value(self: *Self) AST.NodeRef {
     const tok = self.getCurrent();
 
     // TODO: Implement unary operators
+    // TODO: Implement array indexing
+    // TODO: Implement ranges [0..12]
+    // TODO: Implement pointer types *i32
+    // TODO: Implement referencing and dereferencing
+    // e.g. 25.& get pointer,
+    // const x = malloc(i32);
+    // x.* = 13;
 
     const value = switch (tok.ty) {
         .String => self.advanceAlloc(.{ .String = tok.text }),
@@ -469,7 +489,17 @@ fn parse_stmt(self: *Self) AST.NodeRef {
                 .Defer = self.parse_expr(),
             });
         },
-        else => self.parse_expr(),
+        else => if (self.match(.Ident) and self.matchNext(.Equal)) node: {
+            const ident = self.parse_ident();
+            self.advance();
+
+            const value = self.parse_expr();
+
+            break :node self.alloc(.{ .Assignment = .{
+                .ident = ident,
+                .value = value,
+            } });
+        } else self.parse_expr(),
     };
 }
 

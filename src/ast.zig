@@ -9,11 +9,11 @@ pub const Node = union(enum) {
     },
 
     Binary: struct {
-        lhs: *Node,
-        rhs: *Node,
+        lhs: NodeRef,
+        rhs: NodeRef,
         Op: Token,
     },
-    Unary: struct { Op: Token, node: *Node },
+    Unary: struct { Op: Token, node: NodeRef },
 
     Float: []const u8,
     Int: []const u8,
@@ -22,37 +22,39 @@ pub const Node = union(enum) {
 
     Ident: Token,
 
-    Scope: std.ArrayList(*Node),
+    Scope: std.ArrayList(NodeRef),
 
-    ConstDecl: struct { ident: *Node, type: ?*Node, value: *Node },
-    VarDecl: struct { ident: *Node, type: ?*Node, value: *Node },
+    ConstDecl: struct { ident: NodeRef, type: ?NodeRef, value: NodeRef },
+    VarDecl: struct { ident: NodeRef, type: ?NodeRef, value: NodeRef },
+
+    Assignment: struct { ident: NodeRef, value: NodeRef },
 
     ParamaterList: std.ArrayList(NodeRef),
     Paramater: struct { ident: NodeRef, type: NodeRef },
 
     FnDecl: struct {
         params: NodeRef,
-        ret: *Node,
-        block: *Node,
+        ret: NodeRef,
+        block: NodeRef,
     },
-    FnCall: struct { @"fn": *Node, args: std.ArrayList(*Node) },
+    FnCall: struct { @"fn": NodeRef, args: std.ArrayList(NodeRef) },
 
     Return: NodeRef,
     ImplicitReturn: NodeRef,
 
-    Dot: struct { lhs: *Node, ident: *Node },
+    Dot: struct { lhs: NodeRef, ident: NodeRef },
 
-    If: struct { cond: *Node, true: *Node, false: *Node },
+    If: struct { cond: NodeRef, true: NodeRef, false: NodeRef },
 
-    Match: struct { value: *Node, branches: std.ArrayList(*Node) },
-    MatchBranch: struct { pattern: *Node, value: *Node },
+    Match: struct { value: NodeRef, branches: std.ArrayList(NodeRef) },
+    MatchBranch: struct { pattern: NodeRef, value: NodeRef },
 
     Comptime: NodeRef,
     Extern: NodeRef,
 
     FnType: struct {
-        params: std.ArrayList(*Node),
-        ret: *Node,
+        params: std.ArrayList(NodeRef),
+        ret: NodeRef,
     },
 
     Field: struct {
@@ -70,7 +72,7 @@ pub const Node = union(enum) {
 
 allocator: std.mem.Allocator,
 
-root: ?*Node,
+root: ?NodeRef,
 
 const Self = @This();
 
@@ -152,6 +154,11 @@ fn printNode(self: *Self, node: NodeRef, start_indent: u32) void {
                 self.printNode(ty, indent);
             }
 
+            self.printNode(v.value, indent);
+        },
+
+        .Assignment => |v| {
+            self.printNode(v.ident, indent);
             self.printNode(v.value, indent);
         },
 
@@ -241,6 +248,11 @@ fn freeNode(self: *Self, node: NodeRef) void {
         .VarDecl => |v| {
             self.freeNode(v.ident);
             if (v.type) |t| self.freeNode(t);
+            self.freeNode(v.value);
+        },
+
+        .Assignment => |v| {
+            self.freeNode(v.ident);
             self.freeNode(v.value);
         },
 

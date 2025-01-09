@@ -3,7 +3,7 @@ const b = a * a;
 
 const println = 25 + 2;
 
-const factorial = fn(n: int) int {
+const factorial = fn(n: i32) i32 {
       return if x < 2 {
              1
       } else {
@@ -48,3 +48,9 @@ Types:
  - comptime only types:
    - type,
 */
+
+const doubleTwice = fn(n: i32) i32 {
+      var a = n * 2;
+      a = a * 2;
+      return a;
+};

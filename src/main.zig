@@ -3,6 +3,7 @@ const Lexer = @import("lexer.zig");
 const Parser = @import("parser.zig");
 const Log = @import("log.zig");
 const Bytecode = @import("bytecode.zig");
+const UIR = @import("uir.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -38,6 +39,8 @@ pub fn main() !void {
     parser.run();
 
     parser.ast.print();
+
+    try UIR.do(allocator, parser.ast);
 
     var program = Bytecode.Program.make(allocator);
     defer program.deinit();
