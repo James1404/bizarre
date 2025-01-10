@@ -503,6 +503,25 @@ fn parse_stmt(self: *Self) AST.NodeRef {
     };
 }
 
+fn parse_toplevel_stmt(self: *Self) AST.NodeRef {
+    const start = self.getCurrent();
+
+    return switch (start.ty) {
+        .Const => self.parse_const(),
+        .Var => self.parse_var(),
+        .Comptime => node: {
+            self.advance();
+            break :node self.alloc(.{
+                .Comptime = self.parse_expr(),
+            });
+        },
+        else => self.alloc(.{ .Error = .{
+            .msg = "Invalid toplevel statement",
+            .token = start,
+        } }),
+    };
+}
+
 fn parse_scope(self: *Self) AST.NodeRef {
     const start = self.getCurrent();
 
@@ -544,7 +563,7 @@ fn parse_toplevel(self: *Self) AST.NodeRef {
     while (!self.eof()) {
         const start = self.getCurrent();
 
-        list.append(self.parse_stmt()) catch |err| {
+        list.append(self.parse_toplevel_stmt()) catch |err| {
             @panic(@errorName(err));
         };
 
@@ -556,7 +575,7 @@ fn parse_toplevel(self: *Self) AST.NodeRef {
         }
     }
 
-    return self.alloc(.{ .Scope = list });
+    return self.alloc(.{ .TopLevelScope = list });
 }
 
 pub fn run(self: *Self) void {

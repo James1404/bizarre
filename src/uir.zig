@@ -12,6 +12,7 @@ pub const Value = union(enum) {
         ident: []const u8,
         @"fn": Location,
         builtin: Builtin,
+        ref: Ref,
     };
 
     pub const Type = union(enum) {
@@ -37,7 +38,12 @@ pub const Value = union(enum) {
 };
 
 // Reference a value
-pub const Ref = enum(usize) { _ };
+
+pub const Ref = union(enum) {
+    local: usize,
+    ident: []const u8,
+    @"return",
+};
 
 // Builtin values and types
 pub const Builtin = enum(usize) {
@@ -67,31 +73,38 @@ pub const Builtin = enum(usize) {
 };
 
 pub const Inst = union(enum) {
-    add: struct { addr: Ref, lhs: Ref, rhs: Ref },
-    sub: struct { addr: Ref, lhs: Ref, rhs: Ref },
-    div: struct { addr: Ref, lhs: Ref, rhs: Ref },
-    mul: struct { addr: Ref, lhs: Ref, rhs: Ref },
+    add: struct { addr: Ref, lhs: Value, rhs: Value },
+    sub: struct { addr: Ref, lhs: Value, rhs: Value },
+    div: struct { addr: Ref, lhs: Value, rhs: Value },
+    mul: struct { addr: Ref, lhs: Value, rhs: Value },
 
-    cmp_lt: struct { addr: Ref, lhs: Ref, rhs: Ref },
-    cmp_gt: struct { addr: Ref, lhs: Ref, rhs: Ref },
-    cmp_le: struct { addr: Ref, lhs: Ref, rhs: Ref },
-    cmp_ge: struct { addr: Ref, lhs: Ref, rhs: Ref },
-    cmp_eq: struct { addr: Ref, lhs: Ref, rhs: Ref },
-    cmp_ne: struct { addr: Ref, lhs: Ref, rhs: Ref },
+    cmp_lt: struct { addr: Ref, lhs: Value, rhs: Value },
+    cmp_gt: struct { addr: Ref, lhs: Value, rhs: Value },
+    cmp_le: struct { addr: Ref, lhs: Value, rhs: Value },
+    cmp_ge: struct { addr: Ref, lhs: Value, rhs: Value },
+    cmp_eq: struct { addr: Ref, lhs: Value, rhs: Value },
+    cmp_ne: struct { addr: Ref, lhs: Value, rhs: Value },
 
-    negate: struct { addr: Ref, value: Ref },
+    negate: struct { addr: Ref, value: Value },
 
-    cast: struct { addr: Ref, value: Ref, type: Ref },
+    cast: struct { addr: Ref, value: Value, type: Value },
 
-    assign: struct { addr: Ref, value: Ref },
+    set: struct { addr: Ref, value: Value },
 
     push_param: Ref,
     pop_param: struct { addr: Ref },
 
-    call: Location,
+    call: Ref,
+};
 
-    value: struct { addr: Ref, value: Value },
-    builtin: Builtin,
+pub const Terminator = union(enum) {
+    @"if": struct { cond: Ref, true: Location, false: Location },
+    @"switch": struct {
+        value: Ref,
+        patterns: std.ArrayList(Value),
+    },
+    goto: Location,
+    @"return",
 };
 
 pub const Fn = struct {
@@ -110,6 +123,9 @@ pub const Location = enum(usize) { _ };
 pub const Block = struct {
     instructions: std.ArrayList(Inst),
     terminator: ?Terminator = null,
+    counter: usize = 1,
+
+    parent: ?Location,
 
     const Self = @This();
 
@@ -124,21 +140,26 @@ pub const Block = struct {
         self.terminator = null;
     }
 
+    pub fn temp(self: *@This()) Ref {
+        const idx = self.counter;
+        self.counter += 1;
+        return Ref{ .local = idx };
+    }
+
     pub fn append(self: *@This(), inst: Inst) void {
         self.instructions.append(inst) catch |err| {
             @panic(@errorName(err));
         };
     }
-};
 
-pub const Terminator = union(enum) {
-    @"if": struct { cond: Ref, true: Location, false: Location },
-    @"switch": struct {
-        value: Ref,
-        patterns: std.ArrayList(Value),
-    },
-    goto: Location,
-    @"return": Ref,
+    pub fn emit_temp_value(self: *@This(), value: Value.Data) void {
+        const addr = self.temp();
+        self.append(.{ .set = .{
+            .addr = addr,
+            .value = .make_untyped(value),
+        } });
+        return addr;
+    }
 };
 
 pub const CFG = struct {
@@ -156,6 +177,10 @@ pub const CFG = struct {
         this.root = null;
         this.blocks.deinit();
     }
+
+    pub fn get(self: *@This(), loc: Location) *Block {
+        return &self.blocks.items[@intFromEnum(loc)];
+    }
 };
 
 pub const FnIndex = enum(usize) { _ };
@@ -165,7 +190,7 @@ pub const Scope = struct {
     parent: ?ScopeIndex = null,
     children: std.ArrayList(ScopeIndex),
 
-    symbols: std.StringHashMap(void),
+    symbols: std.StringHashMap(Value),
 
     pub fn make(allocator: Allocator) Scope {
         return Scope{
@@ -181,6 +206,16 @@ pub const Scope = struct {
             .children = .init(allocator),
             .symbols = .init(allocator),
         };
+    }
+
+    pub fn register(this: *Scope, name: []const u8, value: Value) void {
+        this.symbols.put(name, value) catch |err| {
+            @panic(@errorName(err));
+        };
+    }
+
+    pub fn get(this: *Scope, name: []const u8) ?Value {
+        return this.symbols.get(name);
     }
 
     pub fn deinit(this: *Scope) void {
@@ -199,7 +234,7 @@ ast: AST,
 const Self = @This();
 
 pub fn make(allocator: Allocator, ast: AST) Self {
-    const self = Self{
+    var self = Self{
         .allocator = allocator,
         .functions = .init(allocator),
         .scopes = .init(allocator),
@@ -250,9 +285,142 @@ fn up(self: *Self) void {
 }
 
 fn get_scope(self: *Self, idx: ScopeIndex) *Scope {
-    return &self.scopes.items[idx];
+    return &self.scopes.items[@intFromEnum(idx)];
+}
+
+fn get_fn(self: *Self, idx: FnIndex) *Fn {
+    return &self.functions.items[@intFromEnum(idx)];
+}
+
+fn emitExpression(
+    self: *Self,
+    cfg: *CFG,
+    loc: Location,
+    node: AST.NodeRef,
+) Ref {
+    const block = cfg.get(loc);
+
+    return switch (node.*) {
+        .Unary => |n| node: {
+            const value = Value.make_untyped(block.emit_temp_value(n.node));
+            const addr = self.temp();
+
+            switch (n.Op.ty) {
+                .Minus => block.append(.{ .negate = .{
+                    .addr = addr,
+                    .value = value,
+                } }),
+                else => unreachable,
+            }
+
+            break :node addr;
+        },
+        .Binary => |n| node: {
+            const lhs = Value.make_untyped(block.emit_temp_value(n.lhs));
+            const rhs = Value.make_untyped(block.emit_temp_value(n.rhs));
+            const addr = self.temp();
+
+            switch (n.Op.ty) {
+                .Plus => block.append(.{ .add = .{
+                    .addr = addr,
+                    .lhs = lhs,
+                    .rhs = rhs,
+                } }),
+                .Minus => block.append(.{ .sub = .{
+                    .addr = addr,
+                    .lhs = lhs,
+                    .rhs = rhs,
+                } }),
+                .Asterix => block.append(.{ .mul = .{
+                    .addr = addr,
+                    .lhs = lhs,
+                    .rhs = rhs,
+                } }),
+                .Slash => block.append(.{ .div = .{
+                    .addr = addr,
+                    .lhs = lhs,
+                    .rhs = rhs,
+                } }),
+                else => unreachable,
+            }
+
+            break :node addr;
+        },
+        .String => |v| block.emit_temp_value(.{ .string = v }),
+        .Int => |v| block.emit_temp_value(.{ .int = v }),
+        .Float => |v| block.emit_temp_value(.{ .float = v }),
+        .Bool => |v| block.emit_temp_value(.{ .bool = v }),
+        .Ident => |v| block.emit_temp_value(.{ .ident = v }),
+        else => unreachable,
+    };
+}
+
+fn getIdent(_: *Self, node: AST.NodeRef) ?[]const u8 {
+    return switch (node.*) {
+        .Ident => |tok| tok.text,
+        else => null,
+    };
+}
+
+fn emitFnStmt(
+    self: *Self,
+    cfg: *CFG,
+    loc: Location,
+    node: AST.NodeRef,
+) void {
+    const block = cfg.get(loc);
+
+    switch (node.*) {
+        .ConstDecl => |n| {
+            const ident = self.getIdent(n.ident) orelse "Unknown identifier";
+            const value = self.emitExpression(cfg, loc, n.value);
+
+            block.append(.{ .set = .{
+                .addr = .{ .ident = ident },
+                .value = value,
+            } });
+        },
+        .VarDecl => |n| {
+            const ident = self.getIdent(n.ident) orelse "Unknown identifier";
+            const value = self.emitExpression(cfg, loc, n.value);
+
+            block.append(.{ .set = .{
+                .addr = .{ .ident = ident },
+                .value = value,
+            } });
+        },
+        .Assignment => |n| {
+            const ident = self.getIdent(n.ident) orelse "Unknown identifier";
+            const value = self.emitExpression(cfg, loc, n.value);
+
+            block.append(.{ .set = .{
+                .addr = .{ .ident = ident },
+                .value = value,
+            } });
+        },
+    }
+}
+
+fn emitTopLevelStmt(self: *Self, node: AST.NodeRef) void {
+    switch (node.*) {
+        .ConstDecl => |n| {
+            const ident = self.getIdent(n.ident);
+        },
+        .VarDecl => |n| {},
+        .Comptime => |n| {},
+        else => @panic("Invalid top level statement"),
+    }
 }
 
 pub fn run(self: *Self) void {
-    _ = self;
+    if (self.ast.root) |root| {
+        switch (root.*) {
+            .TopLevelScope => |lst| {
+                for (lst.items) |n| {
+                    self.emitTopLevelStmt(n);
+                }
+            },
+            else => unreachable,
+        }
+    }
 }

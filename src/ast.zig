@@ -22,6 +22,7 @@ pub const Node = union(enum) {
 
     Ident: Token,
 
+    TopLevelScope: std.ArrayList(NodeRef),
     Scope: std.ArrayList(NodeRef),
 
     ConstDecl: struct { ident: NodeRef, type: ?NodeRef, value: NodeRef },
@@ -136,6 +137,7 @@ fn printNode(self: *Self, node: NodeRef, start_indent: u32) void {
 
         .Ident => |v| printIndent(indent, "{s}", .{v.text}),
 
+        .TopLevelScope => |lst| for (lst.items) |n| self.printNode(n, indent),
         .Scope => |lst| for (lst.items) |n| self.printNode(n, indent),
 
         .ConstDecl => |v| {
@@ -235,6 +237,10 @@ fn freeNode(self: *Self, node: NodeRef) void {
             self.freeNode(v.node);
         },
 
+        .TopLevelScope => |lst| {
+            for (lst.items) |n| self.freeNode(n);
+            lst.deinit();
+        },
         .Scope => |lst| {
             for (lst.items) |n| self.freeNode(n);
             lst.deinit();

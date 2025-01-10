@@ -54,3 +54,24 @@ const doubleTwice = fn(n: i32) i32 {
       a = a * 2;
       return a;
 };
+
+/*
+
+this is turned into
+
+*----------*
+| no params| ---+
+| void     |    |
+*----------*    |
+                |
+                V
+*-------------------*
+|_1 = int(25);      |
+|"a" =  a25;        |
+|"a" = mul a 2;     |
+|_2 = mul a 2;      |
+|param _2;          |
+|call "print"       |
+*-------------------*
+
+*/

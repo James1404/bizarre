@@ -38,8 +38,10 @@ pub fn main() !void {
 
     parser.ast.print();
 
-    const uir = UIR.make(allocator, parser.ast);
+    var uir = UIR.make(allocator, parser.ast);
     defer uir.deinit();
+
+    uir.run();
 }
 
 test {
