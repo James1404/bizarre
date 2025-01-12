@@ -27,6 +27,10 @@ pub const Value = union(enum) {
         bool,
         type,
         any,
+        @"fn": struct {
+            args: Type,
+            ret: Type,
+        },
     };
 
     untyped: Data,
@@ -341,6 +345,28 @@ fn emitExpression(
                     .lhs = lhs,
                     .rhs = rhs,
                 } }),
+
+                .Less => block.append(.{ .cmp_lt = .{
+                    .addr = addr,
+                    .lhs = lhs,
+                    .rhs = rhs,
+                } }),
+                .LessEq => block.append(.{ .cmp_le = .{
+                    .addr = addr,
+                    .lhs = lhs,
+                    .rhs = rhs,
+                } }),
+                .Greater => block.append(.{ .cmp_gt = .{
+                    .addr = addr,
+                    .lhs = lhs,
+                    .rhs = rhs,
+                } }),
+                .GreaterEq => block.append(.{ .cmp_ge = .{
+                    .addr = addr,
+                    .lhs = lhs,
+                    .rhs = rhs,
+                } }),
+
                 else => unreachable,
             }
 
@@ -351,6 +377,15 @@ fn emitExpression(
         .Float => |v| block.emit_temp_value(.{ .float = v }),
         .Bool => |v| block.emit_temp_value(.{ .bool = v }),
         .Ident => |v| block.emit_temp_value(.{ .ident = v }),
+        .FnCall => |n| node: {
+            for (n.args.items) |arg| {
+                const ref = self.emitExpression(cfg, loc, arg);
+                block.append(.{ .push_param = ref });
+            }
+
+            const @"fn" = self.emitExpression(n.@"fn");
+            break :node block.append(.{ .call = @"fn" });
+        },
         else => unreachable,
     };
 }
@@ -398,6 +433,7 @@ fn emitFnStmt(
                 .value = value,
             } });
         },
+        else => {},
     }
 }
 
