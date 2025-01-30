@@ -137,6 +137,28 @@ pub const Terminator = union(enum) {
     },
     goto: Location,
     @"return",
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (self) {
+            .@"if" => |n| try writer.print("if({d}) {d} else {d}", .{
+                n.cond,
+                n.true,
+                n.false,
+            }),
+            .@"switch" => |n| try writer.print("switch({d}) {{ {s} }}", .{
+                n.value,
+                n.patterns.items,
+            }),
+
+            .goto => |n| try writer.print("goto({d})", .{n}),
+            .@"return" => try writer.print("return", .{}),
+        }
+    }
 };
 
 pub const Location = enum(usize) { _ };
@@ -215,8 +237,23 @@ pub fn get(self: *Self, loc: Location) *Block {
 
 fn emit_fn(self: *Self, node: AST.NodeRef) FnIndex {
     const @"fn": Fn = switch (node.*) {
-        .FnDecl => |_| node: {
-            break :node undefined;
+        .FnDecl => |decl| node: {
+            const block = self.new_block();
+
+            switch (decl.block.*) {
+                .Scope => |lst| {
+                    for (lst.items) |n| {
+                        self.emitStmt(block, n);
+                    }
+                },
+                else => unreachable,
+            }
+
+            break :node Fn{
+                .params = .init(self.allocator),
+                .ret = @enumFromInt(0),
+                .start = block,
+            };
         },
         else => undefined,
     };
@@ -404,6 +441,10 @@ pub fn print(self: *Self) void {
             };
             defer self.allocator.free(instStr);
             out("\t%{d} = {s};\n", .{ ref, instStr });
+        }
+
+        if (block.terminator) |terminator| {
+            out("\t{s};\n", .{terminator});
         }
 
         out("}}\n", .{});
