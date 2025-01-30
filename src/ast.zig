@@ -64,8 +64,10 @@ pub const Node = union(enum) {
         default: ?NodeRef,
     },
 
-    Interface: struct { fields: std.ArrayList(NodeRef) },
+    Interface: struct { ident: NodeRef, fields: std.ArrayList(NodeRef) },
     Struct: struct { fields: std.ArrayList(NodeRef) },
+    Distinct: NodeRef,
+    PtrType: NodeRef,
 
     Defer: NodeRef,
     Cast: struct { value: NodeRef, type: NodeRef },
@@ -216,8 +218,13 @@ fn printNode(self: *Self, node: NodeRef, start_indent: u32) void {
             if (v.type) |n| self.printNode(n, indent);
             if (v.default) |n| self.printNode(n, indent);
         },
-        .Interface => |v| for (v.fields.items) |n| self.printNode(n, indent),
+        .Interface => |v| {
+            self.printNode(v.ident, indent);
+            for (v.fields.items) |n| self.printNode(n, indent);
+        },
         .Struct => |v| for (v.fields.items) |n| self.printNode(n, indent),
+        .Distinct => |n| self.printNode(n, indent),
+        .PtrType => |n| self.printNode(n, indent),
 
         .Defer => |n| self.printNode(n, indent),
         .Cast => |v| {
@@ -326,6 +333,7 @@ fn freeNode(self: *Self, node: NodeRef) void {
             if (v.default) |n| self.freeNode(n);
         },
         .Interface => |v| {
+            self.freeNode(v.ident);
             for (v.fields.items) |n| self.freeNode(n);
             v.fields.deinit();
         },
@@ -333,6 +341,8 @@ fn freeNode(self: *Self, node: NodeRef) void {
             for (v.fields.items) |n| self.freeNode(n);
             v.fields.deinit();
         },
+        .Distinct => |n| self.freeNode(n),
+        .PtrType => |n| self.freeNode(n),
 
         .Defer => |n| self.freeNode(n),
 

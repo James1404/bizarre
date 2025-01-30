@@ -10,7 +10,6 @@ pub const Ty = enum {
     Ident,
 
     // Symbols
-
     Dot,
     Comma,
     Colon,
@@ -71,6 +70,7 @@ pub const Ty = enum {
 
     Interface,
     Struct,
+    Distinct,
 
     Defer,
 
@@ -110,6 +110,7 @@ pub const Keywords = std.StaticStringMap(Ty).initComptime(.{
 
     .{ "interface", .Interface },
     .{ "struct", .Struct },
+    .{ "distinct", .Distinct },
 
     .{ "defer", .Defer },
 

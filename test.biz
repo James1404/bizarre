@@ -11,19 +11,19 @@ const factorial = fn(n: i32) i32 {
       };
 };
 
-const Allocator = interface {
-     alloc: fn(T: type) ptr(type);
-     dealloc: fn(ptr: ptr(any)) void;
+interface Allocator {
+     alloc: fn(T: type) *type;
+     dealloc: fn(ptr: *any) void;
 };
 
 const ArenaAllocator = struct {
-      alloc = fn(T: type) ptr(type) {};
-      dealloc = fn(ptr: ptr(any)) void {};
+      alloc = fn(T: type) *type {};
+      dealloc = fn(ptr: *any) void {};
 };
 
 const Vector = comptime fn(T: type) type {
       return struct {
-             items: ptr(T);
+             items: *T;
              len: usize;
       };
 };

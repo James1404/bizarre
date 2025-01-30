@@ -198,8 +198,17 @@ fn parse_value(self: *Self) AST.NodeRef {
             self.advance();
             break :node self.alloc(.{ .Extern = self.parse_expr() });
         },
-        .Interface => self.parse_interface(),
         .Struct => self.parse_struct(),
+        .Distinct => node: {
+            self.advance();
+            break :node undefined; // TODO
+            //break :node self.alloc(.{ .Distinct = self.parse_expr() });
+        },
+        .Asterix => node: {
+            self.advance();
+            break :node self.alloc(.{ .PtrType = self.parse_expr() });
+        },
+
         .LParen => node: {
             self.advance();
 
@@ -323,6 +332,8 @@ fn parse_interface(self: *Self) AST.NodeRef {
     const start = self.getCurrent();
 
     if (self.advanceIf(.Interface)) |_| {
+        const ident = self.parse_ident();
+
         if (self.advanceIf(.LBrace) == null) {
             return self.alloc(.{ .Error = .{
                 .msg = "Interface expects braces",
@@ -346,6 +357,7 @@ fn parse_interface(self: *Self) AST.NodeRef {
         }
 
         return self.alloc(.{ .Interface = .{
+            .ident = ident,
             .fields = fields,
         } });
     }
@@ -382,7 +394,7 @@ fn parse_struct(self: *Self) AST.NodeRef {
             }
         }
 
-        return self.alloc(.{ .Interface = .{
+        return self.alloc(.{ .Struct = .{
             .fields = fields,
         } });
     }
@@ -477,6 +489,7 @@ fn parse_stmt(self: *Self) AST.NodeRef {
     return switch (start.ty) {
         .Const => self.parse_const(),
         .Var => self.parse_var(),
+        .Interface => self.parse_interface(),
         .Return => node: {
             self.advance();
             break :node self.alloc(.{
@@ -509,6 +522,7 @@ fn parse_toplevel_stmt(self: *Self) AST.NodeRef {
     return switch (start.ty) {
         .Const => self.parse_const(),
         .Var => self.parse_var(),
+        .Interface => self.parse_interface(),
         .Comptime => node: {
             self.advance();
             break :node self.alloc(.{
