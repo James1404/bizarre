@@ -42,6 +42,8 @@ pub fn main() !void {
     defer uir.deinit();
 
     uir.run();
+
+    uir.print();
 }
 
 test {

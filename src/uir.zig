@@ -37,9 +37,65 @@ pub const Inst = union(enum) {
     pop_param: struct { addr: Ref },
 
     call: Ref,
+
+    todo,
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (self) {
+            .add => |v| try writer.print("{d} + {d}", .{ v.lhs, v.rhs }),
+            .sub => |v| try writer.print("{d} - {d}", .{ v.lhs, v.rhs }),
+            .mul => |v| try writer.print("{d} * {d}", .{ v.lhs, v.rhs }),
+            .div => |v| try writer.print("{d} / {d}", .{ v.lhs, v.rhs }),
+
+            .cmp_lt => |v| try writer.print("{d} < {d}", .{ v.lhs, v.rhs }),
+            .cmp_gt => |v| try writer.print("{d} > {d}", .{ v.lhs, v.rhs }),
+            .cmp_le => |v| try writer.print("{d} <= {d}", .{ v.lhs, v.rhs }),
+            .cmp_ge => |v| try writer.print("{d} >= {d}", .{ v.lhs, v.rhs }),
+            .cmp_eq => |v| try writer.print("{d} == {d}", .{ v.lhs, v.rhs }),
+            .cmp_ne => |v| try writer.print("{d} != {d}", .{ v.lhs, v.rhs }),
+
+            .negate => |v| try writer.print("-{d}", .{v.value}),
+
+            .cast => |v| try writer.print("cast({d}, {d})", .{ v.value, v.type }),
+
+            .assign => |v| try writer.print("assign({d})", .{v.value}),
+
+            .load => |v| try writer.print("load({s})", .{v.identifier}),
+            .set => |v| try writer.print("set({s}, {d})", .{ v.identifier, v.value }),
+
+            .int => |v| try writer.print("int({s})", .{v}),
+            .float => |v| try writer.print("float({s})", .{v}),
+            .string => |v| try writer.print("string(\"{s}\")", .{v}),
+            .bool => |v| try writer.print("bool({s})", .{if (v) "true" else "false"}),
+            .fn_ref => |v| try writer.print("{s}", .{v}),
+
+            .push_param => |v| try writer.print("push_param({s})", .{v}),
+            .pop_param => |v| try writer.print("pop_param({s})", .{v.addr}),
+
+            .call => |v| try writer.print("call({s})", .{v}),
+
+            .todo => try writer.print("todo", .{}),
+        }
+    }
 };
 
-pub const FnIndex = enum(usize) { _ };
+pub const FnIndex = enum(usize) {
+    _,
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        try writer.print("fn({d})", .{@intFromEnum(self)});
+    }
+};
 pub const Fn = struct {
     const Param = struct {
         ty: Ref,
@@ -49,9 +105,29 @@ pub const Fn = struct {
     params: std.ArrayList(Param),
     ret: Ref,
     start: Location,
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        try writer.print("fn({d})", .{@intFromEnum(self)});
+    }
 };
 
-pub const Ref = enum(usize) { _ };
+pub const Ref = enum(usize) {
+    _,
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        try writer.print("%{d}", .{@intFromEnum(self)});
+    }
+};
 
 pub const Terminator = union(enum) {
     @"if": struct { cond: Ref, true: Location, false: Location },
@@ -233,6 +309,8 @@ fn emitExpression(
             const ref = self.emit_fn(node);
             break :node block.append(.{ .fn_ref = ref });
         },
+        .Struct => block.append(.todo),
+        .Comptime => block.append(.todo),
         else => @panic(@tagName(node.*)),
     };
 }
@@ -293,5 +371,41 @@ pub fn run(self: *Self) void {
             },
             else => unreachable,
         }
+    }
+}
+
+pub fn print(self: *Self) void {
+    const out = std.debug.print;
+
+    for (self.functions.items, 0..) |@"fn", idx| {
+        out("fn {d} {{\n", .{idx});
+
+        out("\tparams = {{\n", .{});
+        for (@"fn".params.items) |param| {
+            out("\t\t{s}: {d}\n", .{ param.name, param.ty });
+        }
+        out("\t}}\n", .{});
+
+        out("\tret = {d}\n", .{@"fn".ret});
+        out("\tblock = {d}\n", .{@"fn".start});
+        out("}}\n", .{});
+    }
+
+    for (self.blocks.items, 0..) |block, idx| {
+        out("block {d} {{\n", .{idx});
+
+        for (block.instructions.items, 0..) |inst, ref| {
+            const instStr = std.fmt.allocPrint(
+                self.allocator,
+                "{s}",
+                .{inst},
+            ) catch |err| {
+                @panic(@errorName(err));
+            };
+            defer self.allocator.free(instStr);
+            out("\t%{d} = {s};\n", .{ ref, instStr });
+        }
+
+        out("}}\n", .{});
     }
 }

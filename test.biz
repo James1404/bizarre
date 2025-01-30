@@ -30,9 +30,7 @@ const Vector = comptime fn(T: type) type {
 
 const r = comptime fn() void {};
 
-const x = fn() int {
-      return 25;
-} ();
+const x = fn() i32 { 25 } ();
 
 /*
 Types:
