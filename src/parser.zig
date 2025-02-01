@@ -135,14 +135,14 @@ fn parse_fnDecl(self: *Self) AST.NodeRef {
                     .block = block,
                 } });
             } else self.alloc(.{ .FnType = .{
-                .params = params,
+                .params = self.alloc(.{ .ParamaterList = params }),
                 .ret = ret,
             } });
         }
     }
 
     return self.alloc(.{ .Error = .{
-        .msg = "Could'nt parse function decleration",
+        .msg = "Couldnt parse function decleration",
         .token = start,
     } });
 }
@@ -344,9 +344,14 @@ fn parse_interface(self: *Self) AST.NodeRef {
         var fields = std.ArrayList(AST.NodeRef).init(self.allocator);
 
         while (self.advanceIf(.RBrace) == null) {
-            fields.append(self.parse_field()) catch |err| {
-                @panic(@errorName(err));
+            const item = switch (self.getCurrent().ty) {
+                .Fn => self.parse_fn_stmt(),
+                .Const => self.parse_const(),
+                .Var => self.parse_var(),
+                else => self.parse_field(),
             };
+
+            fields.append(item) catch unreachable;
 
             if (self.advanceIf(.Semicolon) == null) {
                 return self.alloc(.{ .Error = .{
@@ -382,9 +387,14 @@ fn parse_struct(self: *Self) AST.NodeRef {
         var fields = std.ArrayList(AST.NodeRef).init(self.allocator);
 
         while (self.advanceIf(.RBrace) == null) {
-            fields.append(self.parse_field()) catch |err| {
-                @panic(@errorName(err));
+            const item = switch (self.getCurrent().ty) {
+                .Fn => self.parse_fn_stmt(),
+                .Const => self.parse_const(),
+                .Var => self.parse_var(),
+                else => self.parse_field(),
             };
+
+            fields.append(item) catch unreachable;
 
             if (self.advanceIf(.Semicolon) == null) {
                 return self.alloc(.{ .Error = .{
@@ -483,6 +493,83 @@ fn parse_var(self: *Self) AST.NodeRef {
     } });
 }
 
+fn parse_fn_stmt(self: *Self) AST.NodeRef {
+    const start = self.getCurrent();
+
+    if (self.advanceIf(.Fn)) |_| {
+        const ident = self.parse_ident();
+
+        if (self.advanceIf(.LParen)) |_| {
+            var params = std.ArrayList(AST.NodeRef).init(self.allocator);
+
+            while (true) {
+                if (self.match(.RParen)) break;
+
+                const param_ident = self.parse_ident();
+
+                if (self.advanceIf(.Colon) == null) return self.alloc(.{ .Error = .{
+                    .msg = "Argument needs a type with ':'",
+                    .token = start,
+                } });
+
+                const @"type" = self.parse_expr();
+
+                params.append(self.alloc(.{ .Paramater = .{
+                    .ident = param_ident,
+                    .type = @"type",
+                } })) catch |err| {
+                    @panic(@errorName(err));
+                };
+
+                if (self.advanceIf(.Colon) == null) break;
+            }
+
+            if (self.advanceIf(.RParen) == null) {
+                return self.alloc(.{ .Error = .{
+                    .msg = "Function paramater list requires closing brace",
+                    .token = start,
+                } });
+            }
+
+            const ret = self.parse_expr();
+
+            if (self.match(.LBrace)) {
+                const block = self.parse_scope();
+
+                const @"fn" = self.alloc(.{ .FnDecl = .{
+                    .params = self.alloc(.{
+                        .ParamaterList = params,
+                    }),
+                    .ret = ret,
+                    .block = block,
+                } });
+
+                return self.alloc(.{ .ConstDecl = .{
+                    .ident = ident,
+                    .type = null,
+                    .value = @"fn",
+                } });
+            } else {
+                const @"fn" = self.alloc(.{ .FnType = .{
+                    .params = self.alloc(.{ .ParamaterList = params }),
+                    .ret = ret,
+                } });
+
+                return self.alloc(.{ .ConstDecl = .{
+                    .ident = ident,
+                    .type = null,
+                    .value = @"fn",
+                } });
+            }
+        }
+    }
+
+    return self.alloc(.{ .Error = .{
+        .msg = "Failed to parse fn statement",
+        .token = start,
+    } });
+}
+
 fn parse_stmt(self: *Self) AST.NodeRef {
     const start = self.getCurrent();
 
@@ -502,6 +589,7 @@ fn parse_stmt(self: *Self) AST.NodeRef {
                 .Defer = self.parse_expr(),
             });
         },
+        .Fn => self.parse_fn_stmt(),
         else => if (self.match(.Ident) and self.matchNext(.Equal)) node: {
             const ident = self.parse_ident();
             self.advance();
@@ -529,6 +617,7 @@ fn parse_toplevel_stmt(self: *Self) AST.NodeRef {
                 .Comptime = self.parse_expr(),
             });
         },
+        .Fn => self.parse_fn_stmt(),
         else => self.alloc(.{ .Error = .{
             .msg = "Invalid toplevel statement",
             .token = start,

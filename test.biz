@@ -3,7 +3,7 @@ const b = a * a;
 
 const println = 25 + 2;
 
-const factorial = fn(n: i32) i32 {
+fn factorial(n: i32) i32 {
       return if x < 2 {
              1
       } else {
@@ -12,13 +12,18 @@ const factorial = fn(n: i32) i32 {
 };
 
 interface Allocator {
-     alloc: fn(T: type) *type;
-     dealloc: fn(ptr: *any) void;
+     fn alloc(T: type) *T;
+     fn dealloc(ptr: *any) void;
 };
 
-const ArenaAllocator = struct {
-      alloc = fn(T: type) *type {};
-      dealloc = fn(ptr: *any) void {};
+const c_allocator = struct {
+      fn alloc(T: type) *T {
+         malloc(sizeof(T))
+      };
+
+      fn dealloc(ptr: *any) void {
+         free(ptr);
+      };
 };
 
 const Vector = comptime fn(T: type) type {

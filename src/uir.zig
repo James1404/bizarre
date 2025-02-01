@@ -33,8 +33,11 @@ pub const Inst = union(enum) {
     bool: bool,
     fn_ref: FnIndex,
 
-    push_param: Ref,
-    pop_param: struct { addr: Ref },
+    push: Ref,
+    pop: struct { addr: Ref },
+
+    create_struct,
+    create_interface,
 
     call: Ref,
 
@@ -74,8 +77,11 @@ pub const Inst = union(enum) {
             .bool => |v| try writer.print("bool({s})", .{if (v) "true" else "false"}),
             .fn_ref => |v| try writer.print("{s}", .{v}),
 
-            .push_param => |v| try writer.print("push_param({s})", .{v}),
-            .pop_param => |v| try writer.print("pop_param({s})", .{v.addr}),
+            .push => |v| try writer.print("push({s})", .{v}),
+            .pop => |v| try writer.print("pop({s})", .{v.addr}),
+
+            .create_struct => |_| try writer.print("create_struct", .{}),
+            .create_interface => |_| try writer.print("create_interface", .{}),
 
             .call => |v| try writer.print("call({s})", .{v}),
 
@@ -96,23 +102,21 @@ pub const FnIndex = enum(usize) {
         try writer.print("fn({d})", .{@intFromEnum(self)});
     }
 };
+
 pub const Fn = struct {
     const Param = struct {
-        ty: Ref,
+        ty: Graph,
         name: []const u8,
     };
 
     params: std.ArrayList(Param),
-    ret: Ref,
-    start: Location,
+    ret: Graph,
+    body: Graph,
 
-    pub fn format(
-        self: @This(),
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        try writer.print("fn({d})", .{@intFromEnum(self)});
+    pub fn deinit(self: *Fn) void {
+        self.params.deinit();
+        self.ret.deinit();
+        self.body.deinit();
     }
 };
 
@@ -166,7 +170,6 @@ pub const Location = enum(usize) { _ };
 pub const Block = struct {
     instructions: std.ArrayList(Inst),
     terminator: ?Terminator = null,
-    counter: usize = 1,
 
     parent: ?Location = null,
 
@@ -192,70 +195,236 @@ pub const Block = struct {
     }
 };
 
+pub const Graph = struct {
+    owner: *Self,
+    allocator: Allocator,
+    blocks: std.ArrayList(Block),
+    counter: usize = 0,
+    start: Location = @enumFromInt(0),
+
+    pub fn make(owner: *Self, allocator: Allocator, node: AST.NodeRef) Graph {
+        var graph = Graph{
+            .owner = owner,
+            .allocator = allocator,
+            .blocks = .init(allocator),
+        };
+
+        const block = graph.new_block();
+        graph.start = block;
+
+        switch (node.*) {
+            .Scope => |lst| {
+                for (lst.items) |n| {
+                    graph.emitStmt(block, n);
+                }
+            },
+            else => _ = graph.emitExpression(block, node),
+        }
+
+        return graph;
+    }
+
+    pub fn deinit(self: *Graph) void {
+        for (self.blocks.items) |*block| block.deinit();
+        self.blocks.deinit();
+    }
+
+    pub fn new_block(self: *Graph) Location {
+        const idx = self.blocks.items.len;
+
+        self.blocks.append(Block.make(self.allocator)) catch |err| {
+            @panic(@errorName(err));
+        };
+
+        return @enumFromInt(idx);
+    }
+
+    pub fn get(self: *Graph, loc: Location) *Block {
+        return &self.blocks.items[@intFromEnum(loc)];
+    }
+
+    fn emitExpression(
+        self: *Graph,
+        loc: Location,
+        node: AST.NodeRef,
+    ) Ref {
+        const block = self.get(loc);
+
+        return switch (node.*) {
+            .Unary => |n| node: {
+                const value = self.emitExpression(loc, n.node);
+                break :node switch (n.Op.ty) {
+                    .Minus => block.append(.{ .negate = .{
+                        .value = value,
+                    } }),
+                    else => unreachable,
+                };
+            },
+            .Binary => |n| node: {
+                const lhs = self.emitExpression(loc, n.lhs);
+                const rhs = self.emitExpression(loc, n.rhs);
+
+                break :node switch (n.Op.ty) {
+                    .Plus => block.append(.{ .add = .{
+                        .lhs = lhs,
+                        .rhs = rhs,
+                    } }),
+                    .Minus => block.append(.{ .sub = .{
+                        .lhs = lhs,
+                        .rhs = rhs,
+                    } }),
+                    .Asterix => block.append(.{ .mul = .{
+                        .lhs = lhs,
+                        .rhs = rhs,
+                    } }),
+                    .Slash => block.append(.{ .div = .{
+                        .lhs = lhs,
+                        .rhs = rhs,
+                    } }),
+
+                    .Less => block.append(.{ .cmp_lt = .{
+                        .lhs = lhs,
+                        .rhs = rhs,
+                    } }),
+                    .LessEq => block.append(.{ .cmp_le = .{
+                        .lhs = lhs,
+                        .rhs = rhs,
+                    } }),
+                    .Greater => block.append(.{ .cmp_gt = .{
+                        .lhs = lhs,
+                        .rhs = rhs,
+                    } }),
+                    .GreaterEq => block.append(.{ .cmp_ge = .{
+                        .lhs = lhs,
+                        .rhs = rhs,
+                    } }),
+
+                    else => unreachable,
+                };
+            },
+            .String => |v| block.append(.{ .string = v }),
+            .Int => |v| block.append(.{ .int = v }),
+            .Float => |v| block.append(.{ .float = v }),
+            .Bool => |v| block.append(.{ .bool = v }),
+            .Ident => |v| node: {
+                break :node block.append(.{ .load = .{
+                    .identifier = v.text,
+                } });
+            },
+            .FnCall => |n| node: {
+                for (n.args.items) |arg| {
+                    const ref = self.emitExpression(loc, arg);
+                    _ = block.append(.{ .push = ref });
+                }
+
+                const @"fn" = self.emitExpression(loc, n.@"fn");
+                break :node block.append(.{ .call = @"fn" });
+            },
+            .FnDecl => |_| node: {
+                const ref = self.owner.emit_fn(node);
+                break :node block.append(.{ .fn_ref = ref });
+            },
+            .Struct => block.append(.todo),
+            .Comptime => block.append(.todo),
+            else => @panic(@tagName(node.*)),
+        };
+    }
+
+    fn emitStmt(
+        self: *Graph,
+        loc: Location,
+        node: AST.NodeRef,
+    ) void {
+        const block = self.get(loc);
+
+        switch (node.*) {
+            .ConstDecl => |n| {
+                const ident = getIdent(n.ident) orelse "Unknown identifier";
+                const value = self.emitExpression(loc, n.value);
+
+                _ = block.append(.{ .set = .{
+                    .identifier = ident,
+                    .value = value,
+                } });
+            },
+            .VarDecl => |n| {
+                const ident = getIdent(n.ident) orelse "Unknown identifier";
+                const value = self.emitExpression(loc, n.value);
+
+                _ = block.append(.{ .set = .{
+                    .identifier = ident,
+                    .value = value,
+                } });
+            },
+            .Assignment => |n| {
+                const ident = getIdent(n.ident) orelse "Unknown identifier";
+                const value = self.emitExpression(loc, n.value);
+
+                _ = block.append(.{ .set = .{
+                    .identifier = ident,
+                    .value = value,
+                } });
+            },
+            else => {},
+        }
+    }
+};
+
 allocator: Allocator,
 functions: std.ArrayList(Fn),
-blocks: std.ArrayList(Block),
+globals: std.StringHashMap(Graph),
 scopes: Scopes,
-global_block: Location,
 ast: AST,
 
 const Self = @This();
 
 pub fn make(allocator: Allocator, ast: AST) Self {
-    var self = Self{
+    return Self{
         .allocator = allocator,
         .functions = .init(allocator),
-        .blocks = .init(allocator),
+        .globals = .init(allocator),
         .scopes = .make(allocator),
-        .global_block = undefined,
         .ast = ast,
     };
-
-    self.global_block = self.new_block();
-    return self;
 }
 
 pub fn deinit(self: *Self) void {
+    for (self.functions.items) |*func| func.deinit();
     self.functions.deinit();
-    self.blocks.deinit();
+
+    var globalIter = self.globals.iterator();
+    while (globalIter.next()) |entry| {
+        entry.value_ptr.deinit();
+    }
+    self.globals.deinit();
+
     self.scopes.deinit();
-}
-
-pub fn new_block(self: *Self) Location {
-    const idx = self.blocks.items.len;
-
-    self.blocks.append(Block.make(self.allocator)) catch |err| {
-        @panic(@errorName(err));
-    };
-
-    return @enumFromInt(idx);
-}
-
-pub fn get(self: *Self, loc: Location) *Block {
-    return &self.blocks.items[@intFromEnum(loc)];
 }
 
 fn emit_fn(self: *Self, node: AST.NodeRef) FnIndex {
     const @"fn": Fn = switch (node.*) {
         .FnDecl => |decl| node: {
-            const block = self.new_block();
+            const body = Graph.make(self, self.allocator, decl.block);
+            const ret = Graph.make(self, self.allocator, decl.ret);
+            const params = lst: {
+                var list: std.ArrayList(Fn.Param) = .init(self.allocator);
+                for (decl.params.ParamaterList.items) |param| {
+                    list.append(.{
+                        .ty = Graph.make(self, self.allocator, param.Paramater.type),
+                        .name = getIdent(param.Paramater.ident) orelse unreachable,
+                    }) catch unreachable;
+                }
 
-            switch (decl.block.*) {
-                .Scope => |lst| {
-                    for (lst.items) |n| {
-                        self.emitStmt(block, n);
-                    }
-                },
-                else => unreachable,
-            }
+                break :lst list;
+            };
 
             break :node Fn{
-                .params = .init(self.allocator),
-                .ret = @enumFromInt(0),
-                .start = block,
+                .params = params,
+                .ret = ret,
+                .body = body,
             };
         },
-        else => undefined,
+        else => unreachable,
     };
 
     const idx = self.functions.items.len;
@@ -265,136 +434,30 @@ fn emit_fn(self: *Self, node: AST.NodeRef) FnIndex {
     return @enumFromInt(idx);
 }
 
-fn emitExpression(
-    self: *Self,
-    loc: Location,
-    node: AST.NodeRef,
-) Ref {
-    const block = self.get(loc);
-
-    return switch (node.*) {
-        .Unary => |n| node: {
-            const value = self.emitExpression(loc, n.node);
-            break :node switch (n.Op.ty) {
-                .Minus => block.append(.{ .negate = .{
-                    .value = value,
-                } }),
-                else => unreachable,
-            };
-        },
-        .Binary => |n| node: {
-            const lhs = self.emitExpression(loc, n.lhs);
-            const rhs = self.emitExpression(loc, n.rhs);
-
-            break :node switch (n.Op.ty) {
-                .Plus => block.append(.{ .add = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-                .Minus => block.append(.{ .sub = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-                .Asterix => block.append(.{ .mul = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-                .Slash => block.append(.{ .div = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-
-                .Less => block.append(.{ .cmp_lt = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-                .LessEq => block.append(.{ .cmp_le = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-                .Greater => block.append(.{ .cmp_gt = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-                .GreaterEq => block.append(.{ .cmp_ge = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-
-                else => unreachable,
-            };
-        },
-        .String => |v| block.append(.{ .string = v }),
-        .Int => |v| block.append(.{ .int = v }),
-        .Float => |v| block.append(.{ .float = v }),
-        .Bool => |v| block.append(.{ .bool = v }),
-        .Ident => |v| node: {
-            break :node block.append(.{ .load = .{
-                .identifier = v.text,
-            } });
-        },
-        .FnCall => |n| node: {
-            for (n.args.items) |arg| {
-                const ref = self.emitExpression(loc, arg);
-                _ = block.append(.{ .push_param = ref });
-            }
-
-            const @"fn" = self.emitExpression(loc, n.@"fn");
-            break :node block.append(.{ .call = @"fn" });
-        },
-        .FnDecl => |_| node: {
-            const ref = self.emit_fn(node);
-            break :node block.append(.{ .fn_ref = ref });
-        },
-        .Struct => block.append(.todo),
-        .Comptime => block.append(.todo),
-        else => @panic(@tagName(node.*)),
-    };
-}
-
-fn getIdent(_: *Self, node: AST.NodeRef) ?[]const u8 {
+fn getIdent(node: AST.NodeRef) ?[]const u8 {
     return switch (node.*) {
         .Ident => |tok| tok.text,
         else => null,
     };
 }
 
-fn emitStmt(
-    self: *Self,
-    loc: Location,
-    node: AST.NodeRef,
-) void {
-    const block = self.get(loc);
-
+pub fn emitGlobal(self: *Self, node: AST.NodeRef) void {
     switch (node.*) {
-        .ConstDecl => |n| {
-            const ident = self.getIdent(n.ident) orelse "Unknown identifier";
-            const value = self.emitExpression(loc, n.value);
-
-            _ = block.append(.{ .set = .{
-                .identifier = ident,
-                .value = value,
-            } });
-        },
         .VarDecl => |n| {
-            const ident = self.getIdent(n.ident) orelse "Unknown identifier";
-            const value = self.emitExpression(loc, n.value);
-
-            _ = block.append(.{ .set = .{
-                .identifier = ident,
-                .value = value,
-            } });
+            const ident = getIdent(n.ident) orelse "";
+            const graph = Graph.make(self, self.allocator, n.value);
+            self.globals.put(ident, graph) catch |err| {
+                @panic(@errorName(err));
+            };
         },
-        .Assignment => |n| {
-            const ident = self.getIdent(n.ident) orelse "Unknown identifier";
-            const value = self.emitExpression(loc, n.value);
-
-            _ = block.append(.{ .set = .{
-                .identifier = ident,
-                .value = value,
-            } });
+        .ConstDecl => |n| {
+            const ident = getIdent(n.ident) orelse "";
+            const graph = Graph.make(self, self.allocator, n.value);
+            self.globals.put(ident, graph) catch |err| {
+                @panic(@errorName(err));
+            };
         },
-        else => {},
+        else => unreachable,
     }
 }
 
@@ -403,7 +466,7 @@ pub fn run(self: *Self) void {
         switch (root.*) {
             .TopLevelScope => |lst| {
                 for (lst.items) |n| {
-                    self.emitStmt(self.global_block, n);
+                    self.emitGlobal(n);
                 }
             },
             else => unreachable,
@@ -411,25 +474,25 @@ pub fn run(self: *Self) void {
     }
 }
 
-pub fn print(self: *Self) void {
-    const out = std.debug.print;
+fn write_ident(
+    writer: anytype,
+    indent: usize,
+    comptime fmt: []const u8,
+    args: anytype,
+) !void {
+    for (0..indent) |_| try writer.print("\t", .{});
+    try writer.print(fmt, args);
+    try writer.print("\n", .{});
+}
 
-    for (self.functions.items, 0..) |@"fn", idx| {
-        out("fn {d} {{\n", .{idx});
-
-        out("\tparams = {{\n", .{});
-        for (@"fn".params.items) |param| {
-            out("\t\t{s}: {d}\n", .{ param.name, param.ty });
-        }
-        out("\t}}\n", .{});
-
-        out("\tret = {d}\n", .{@"fn".ret});
-        out("\tblock = {d}\n", .{@"fn".start});
-        out("}}\n", .{});
-    }
-
-    for (self.blocks.items, 0..) |block, idx| {
-        out("block {d} {{\n", .{idx});
+fn print_graph(
+    self: *Self,
+    graph: *Graph,
+    indent: usize,
+    writer: anytype,
+) !void {
+    for (graph.blocks.items, 0..) |block, block_idx| {
+        try write_ident(writer, indent, "block {d} {{", .{block_idx});
 
         for (block.instructions.items, 0..) |inst, ref| {
             const instStr = std.fmt.allocPrint(
@@ -440,13 +503,108 @@ pub fn print(self: *Self) void {
                 @panic(@errorName(err));
             };
             defer self.allocator.free(instStr);
-            out("\t%{d} = {s};\n", .{ ref, instStr });
+            try write_ident(writer, indent + 1, "t%{d} = {s};", .{ ref, instStr });
         }
 
         if (block.terminator) |terminator| {
-            out("\t{s};\n", .{terminator});
+            try write_ident(writer, indent + 1, "{s};", .{terminator});
         }
 
-        out("}}\n", .{});
+        try write_ident(writer, indent, "}}", .{});
+    }
+}
+
+pub fn print(self: *Self) void {
+    const out = std.debug.print;
+
+    out("### FUNCTIONS ###\n", .{});
+    for (self.functions.items, 0..) |@"fn", idx| {
+        out("fn {d} {{\n", .{idx});
+
+        out("\tparams = {{\n", .{});
+        for (@"fn".params.items) |param| {
+            out("\t\t{s}\n", .{param.name}); // TODO: print type
+        }
+        out("\t}}\n", .{});
+
+        out("\tret = {{\n", .{});
+        for (@"fn".ret.blocks.items, 0..) |block, block_idx| {
+            out("\t\tblock {d} {{\n", .{block_idx});
+
+            for (block.instructions.items, 0..) |inst, ref| {
+                const instStr = std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}",
+                    .{inst},
+                ) catch |err| {
+                    @panic(@errorName(err));
+                };
+                defer self.allocator.free(instStr);
+                out("\t\t\t%{d} = {s};\n", .{ ref, instStr });
+            }
+
+            if (block.terminator) |terminator| {
+                out("\t\t\t{s};\n", .{terminator});
+            }
+
+            out("\t\t}}\n", .{});
+        }
+
+        out("\t}}\n", .{});
+
+        for (@"fn".body.blocks.items, 0..) |block, block_idx| {
+            out("\tblock {d} {{\n", .{block_idx});
+
+            for (block.instructions.items, 0..) |inst, ref| {
+                const instStr = std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}",
+                    .{inst},
+                ) catch |err| {
+                    @panic(@errorName(err));
+                };
+                defer self.allocator.free(instStr);
+                out("\t\t%{d} = {s};\n", .{ ref, instStr });
+            }
+
+            if (block.terminator) |terminator| {
+                out("\t\t{s};\n", .{terminator});
+            }
+
+            out("\t}}\n", .{});
+        }
+
+        out("}}\n\n", .{});
+    }
+
+    out("### GLOBALS ###\n", .{});
+    var globalIter = self.globals.iterator();
+    while (globalIter.next()) |entry| {
+        out("{s} = {{\n", .{entry.key_ptr.*});
+
+        const graph = entry.value_ptr;
+        for (graph.blocks.items, 0..) |block, block_idx| {
+            out("\tblock {d} {{\n", .{block_idx});
+
+            for (block.instructions.items, 0..) |inst, ref| {
+                const instStr = std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}",
+                    .{inst},
+                ) catch |err| {
+                    @panic(@errorName(err));
+                };
+                defer self.allocator.free(instStr);
+                out("\t\t%{d} = {s};\n", .{ ref, instStr });
+            }
+
+            if (block.terminator) |terminator| {
+                out("\t\t{s};\n", .{terminator});
+            }
+
+            out("\t}}\n", .{});
+        }
+
+        out("}}\n\n", .{});
     }
 }

@@ -54,7 +54,7 @@ pub const Node = union(enum) {
     Extern: NodeRef,
 
     FnType: struct {
-        params: std.ArrayList(NodeRef),
+        params: NodeRef,
         ret: NodeRef,
     },
 
@@ -210,7 +210,7 @@ fn printNode(self: *Self, node: NodeRef, start_indent: u32) void {
 
         .FnType => |v| {
             self.printNode(v.ret, indent);
-            for (v.params.items) |n| self.printNode(n, indent);
+            self.printNode(v.params, indent);
         },
 
         .Field => |v| {
@@ -321,9 +321,7 @@ fn freeNode(self: *Self, node: NodeRef) void {
         .Extern => |n| self.freeNode(n),
 
         .FnType => |v| {
-            for (v.params.items) |n| self.freeNode(n);
-            v.params.deinit();
-
+            self.freeNode(v.params);
             self.freeNode(v.ret);
         },
 
