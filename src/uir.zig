@@ -5,6 +5,16 @@ const AST = @import("ast.zig");
 
 const Scopes = @import("scopes.zig");
 
+pub const Code = struct {
+    instructions: []Inst,
+    blocks: []BasicBlock,
+
+    pub const BasicBlock = struct {
+        start: usize,
+        len: usize,
+    };
+};
+
 pub const Inst = union(enum) {
     add: struct { lhs: Ref, rhs: Ref },
     sub: struct { lhs: Ref, rhs: Ref },
@@ -40,8 +50,16 @@ pub const Inst = union(enum) {
     create_interface,
 
     call: Ref,
-
     todo,
+
+    // Terminators
+    @"if": struct { cond: Ref, true: Location, false: Location },
+    match: struct {
+        value: Ref,
+        patterns: std.ArrayList(Ref),
+    },
+    goto: Location,
+    @"return",
 
     pub fn format(
         self: @This(),
@@ -86,6 +104,17 @@ pub const Inst = union(enum) {
             .call => |v| try writer.print("call({s})", .{v}),
 
             .todo => try writer.print("todo", .{}),
+
+            .@"if" => |v| try writer.print("if {s} then {s} else {s}", .{
+                v.cond,
+                v.true,
+                v.false,
+            }),
+            .match => |v| {
+                try writer.print("match {s} ({s})", .{ v.value, v.patterns.items });
+            },
+            .goto => |v| try writer.print("goto {s}", .{v}),
+            .@"return" => try writer.print("return", .{}),
         }
     }
 };
@@ -105,13 +134,13 @@ pub const FnIndex = enum(usize) {
 
 pub const Fn = struct {
     const Param = struct {
-        ty: Graph,
+        ty: Location,
         name: []const u8,
     };
 
     params: std.ArrayList(Param),
-    ret: Graph,
-    body: Graph,
+    ret: Location,
+    body: Location,
 
     pub fn deinit(self: *Fn) void {
         self.params.deinit();
