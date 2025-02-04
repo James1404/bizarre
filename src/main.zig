@@ -1,7 +1,7 @@
 const std = @import("std");
 const Lexer = @import("lexer.zig");
 const Parser = @import("parser.zig");
-const UIR = @import("uir.zig");
+const UIRGen = @import("uirgen.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -38,12 +38,12 @@ pub fn main() !void {
 
     parser.ast.print();
 
-    var uir = UIR.make(allocator, parser.ast);
-    defer uir.deinit();
+    var uirgen = UIRGen.make(allocator, parser.ast);
+    defer uirgen.deinit();
 
-    uir.run();
+    uirgen.run();
 
-    uir.print();
+    uirgen.print();
 }
 
 test {

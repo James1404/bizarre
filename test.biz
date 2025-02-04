@@ -1,35 +1,8 @@
-const a = 25;
-const b = a * a;
-
-const println = 25 + 2;
-
 fn factorial(n: i32) i32 {
       return if x < 2 {
              1
       } else {
              n * factorial(n - 1)
-      };
-};
-
-interface Allocator {
-     fn alloc(T: type) *T;
-     fn dealloc(ptr: *any) void;
-};
-
-const c_allocator = struct {
-      fn alloc(T: type) *T {
-         malloc(sizeof(T))
-      };
-
-      fn dealloc(ptr: *any) void {
-         free(ptr);
-      };
-};
-
-const Vector = comptime fn(T: type) type {
-      return struct {
-             items: *T;
-             len: usize;
       };
 };
 
