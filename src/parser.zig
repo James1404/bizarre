@@ -578,7 +578,7 @@ fn parse_stmt(self: *Self) AST.NodeRef {
         .Var => self.parse_var(),
         .Interface => self.parse_interface(),
         .Return => node: {
-            self.advance();
+            self.advance(); // TODO: Breaks if not returning value
             break :node self.alloc(.{
                 .Return = self.parse_expr(),
             });

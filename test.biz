@@ -1,53 +1,49 @@
 fn factorial(n: i32) i32 {
-      return if x < 2 {
+      return if n < 2 {
              1
       } else {
              n * factorial(n - 1)
       };
 };
 
-const r = comptime fn() void {};
+0 = fn {
+    args = [
+        "n" = cfg {
+        bb0:
+          %0 = load "i32";
+           return %0;
+        }
+    ]
+    return = cfg {
+    bb0:
+       %0 = load "i32";
+       return %0;
+    }
+    body = cfg {
+    bb0:
+        %0 = load_arg "n";
+        %1 = int(2);
+        %2 = %0 < %1;
+        if %2 then goto bb1 else goto bb2;
+    bb1:
+        %3 = int(1);
+        goto bb3 [%3];
+    bb2:
+        %4 = load_arg "n";
+        %5 = load_arg "n";
+        %6 = int(1);
+        %7 = %5 - %6;
+        %8 = load "factorial";
+        %9 = call(%8, [%7]);
+        %10 = %4 * %9;
+        goto bb3 [%10];
+    bb3 (arg):
+        return arg;
+    }
+}
 
-const x = fn() i32 { 25 } ();
-
-/*
-Types:
- - i8, i16, i32, i64, isize,
- - u8, u16, u32, u64, usize,
- - f32, f64,
- - bool,
- - string,
- - Array: [type;size],
- - Slice: [type],
- - Tuple: (i32, f32, string, bool, struct {}),
- - any,
- - comptime only types:
-   - type,
-*/
-
-const doubleTwice = fn(n: i32) i32 {
-      var a = n * 2;
-      a = a * 2;
-      return a;
-};
-
-/*
-
-this is turned into
-
-*----------*
-| no params| ---+
-| void     |    |
-*----------*    |
-                |
-                V
-*-------------------*
-|_1 = int(25);      |
-|"a" =  a25;        |
-|"a" = mul a 2;     |
-|_2 = mul a 2;      |
-|param _2;          |
-|call "print"       |
-*-------------------*
-
-*/
+"factorial" = cfg {
+bb0:
+    %0 = fn_ref(0);
+    return %0;
+}
