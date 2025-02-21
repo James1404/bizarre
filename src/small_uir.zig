@@ -2,11 +2,39 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 allocator: Allocator,
-bytes: std.ArrayList(u8).Slice,
-constants: std.ArrayList(Constant).Slice,
-functions: std.ArrayList(Fn).Slice,
+instructions: std.ArrayList(Instruction),
+constants: std.ArrayList(Constant),
 
 const Self = @This();
+
+pub fn make(allocator: Allocator) Self {
+    return Self{
+        .allocator = allocator,
+        .instructions = .init(allocator),
+        .constants = .init(allocator),
+        .functions = .init(allocator),
+    };
+}
+
+pub fn deinit(self: *Self) void {
+    self.instructions.deinit();
+    self.constants.deinit();
+    self.functions.deinit();
+}
+
+pub const Chunk = struct {
+    instructions: std.ArrayList(Instruction),
+
+    pub fn make(allocator: Allocator) Chunk {
+        return Chunk{
+            .instructions = .init(allocator),
+        };
+    }
+
+    pub fn deinit(chunk: *Chunk) void {
+        chunk.instructions.deinit();
+    }
+};
 
 pub const Ref = enum(u32) {
     _,
@@ -20,18 +48,6 @@ pub const Ref = enum(u32) {
         try writer.print("Ref.%{d}", .{@intFromEnum(self)});
     }
 };
-
-pub fn fetch(self: *Self, pc: usize) []u8 {
-    return self.code.bytes[pc .. pc + @sizeOf(Instruction)];
-}
-
-pub fn decode(_: *Self, bytes: []u8) Instruction {
-    return std.mem.bytesAsValue(Instruction, bytes);
-}
-
-pub fn len(self: *Self) usize {
-    return self.bytes.len;
-}
 
 pub const StringInteringPool = struct {
     data: std.ArrayList(u8),
@@ -76,6 +92,7 @@ pub const OpCode = enum(u8) {
 
     move, // A = B
 
+    argc, // A = No. of args
     load_arg, // A = arg(B)
     load_constant, // A = constant(B)
 
@@ -87,8 +104,9 @@ pub const OpCode = enum(u8) {
     define_field, // field A: B = C
     define_arg, // arg: A: B
 
-    define_struct, // A = create struct of size B,
-    define_interface, // A = create interface of size B,
+    define_struct, // A = create struct from next B instructions
+    define_interface, // A = create interface from next B instructions
+    define_fn, // A = create fn from next B instructions
 
     push, // push(A)
     pop, // A = pop()
@@ -159,7 +177,6 @@ pub const Constant = union(enum) {
     float: []const u8,
     string: []const u8,
     bool: bool,
-    fn_ref: Fn.Index,
 
     pub fn format(
         self: @This(),
@@ -172,30 +189,7 @@ pub const Constant = union(enum) {
             .float => |v| try writer.print("float({s})", .{v}),
             .string => |v| try writer.print("string(\"{s}\")", .{v}),
             .bool => |v| try writer.print("bool({s})", .{if (v) "true" else "false"}),
-            .fn_ref => |v| try writer.print("{s}", .{v}),
             else => {},
         }
     }
-};
-
-pub const Fn = struct {
-    return_type: []u8,
-    body_bytes: []u8,
-
-    pub const Index = enum(usize) {
-        _,
-
-        pub fn format(
-            self: @This(),
-            comptime _: []const u8,
-            _: std.fmt.FormatOptions,
-            writer: anytype,
-        ) !void {
-            try writer.print("fn({d})", .{@intFromEnum(self)});
-        }
-    };
-    pub const Param = struct {
-        name: []const u8,
-        ty: []u8,
-    };
 };

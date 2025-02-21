@@ -6,6 +6,7 @@ fn factorial(n: i32) i32 {
       };
 };
 
+/*
 0 = fn {
     args = [
         "n" = cfg {
@@ -47,3 +48,4 @@ bb0:
     %0 = fn_ref(0);
     return %0;
 }
+*/
