@@ -1,48 +1,46 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-instructions: std.ArrayList(Inst),
+allocator: Allocator,
+instructions: std.ArrayList(Instruction),
 constants: Constants,
-
-// TODO: Add primitives to Ref, like: true, false, u8, u32, bool, null, etc...
-// TODO: Allow refs to reference constants
-// TODO: Add some kind of constant table
-// TODO: Add a string interning pool
+bytes: std.ArrayList(u8),
 
 const Self = @This();
 
 pub fn make(allocator: Allocator) Self {
     return Self{
+        .allocator = allocator,
         .instructions = .init(allocator),
         .constants = .make(allocator),
     };
 }
 
 pub fn deinit(self: *Self) void {
-    defer self.instructions.deinit();
-    for (self.instructions.items) |*inst| {
-        inst.deinit();
-    }
-
+    self.instructions.deinit();
     self.constants.deinit();
+}
+
+pub fn decode_op(self: *Self, pc: usize) OpCode {
+    return std.mem.bytesAsValue(
+        OpCode,
+        self.bytes.items[pc .. pc + @sizeOf(OpCode)],
+    );
+}
+
+pub fn decode_u32(self: *Self, pc: usize) u32 {
+    return self.bytes.items[pc .. pc + @sizeOf(u32)];
+}
+
+pub fn get(self: *Self, idx: usize) *Instruction {
+    return &self.instructions.items[idx];
 }
 
 pub fn len(self: *Self) usize {
     return self.instructions.items.len;
 }
 
-pub fn append(self: *Self, inst: Inst) Ref {
-    const index = self.instructions.items.len;
-    self.instructions.append(inst) catch unreachable;
-    return @enumFromInt(index);
-}
-
-pub fn get(self: *Self, ref: Ref) *Inst {
-    return &self.instructions.items[@intFromEnum(ref)];
-}
-
-// A reference to a register
-pub const Ref = enum(usize) {
+pub const Ref = enum(u32) {
     _,
 
     pub fn format(
@@ -51,7 +49,143 @@ pub const Ref = enum(usize) {
         _: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        try writer.print("%{d}", .{@intFromEnum(self)});
+        try writer.print("Ref.%{d}", .{@intFromEnum(self)});
+    }
+};
+
+// Variables names are resolved to an index
+// for e.g.
+// ==========
+// int a = 25;
+// int b = a * 2;
+// ==========
+//
+// this gets resolved to
+// ==========
+// int 0 = 25;
+// int 1 = var(0) * 2;
+// ==========
+
+pub const OpCode = enum(u8) {
+    // Layout
+    // Op A B C
+
+    nop,
+
+    add, // A = B + C
+    sub, // A = B - C
+    mul, // A = B * C
+    div, // A = B / C
+
+    cmp_lt, // A = B < C
+    cmp_gt, // A = B > C
+    cmp_le, // A = B <= C
+    cmp_ge, // A = B >= C
+    cmp_eq, // A = B == C
+    cmp_ne, // A = B != C
+
+    negative, // A = -B
+    not, // A = !B
+
+    cast, // A = B as C
+    typeof, // A = typeof(B)
+
+    move, // A = B
+
+    load_constant, // A = constant(B)
+
+    load, // A = vars[B]
+    store, // vars[A] = B
+
+    create_var, // vars[A] with type B
+    create_const, // vars[A] with type B
+
+    struct_decl, // A = create struct from next B instructions
+    interface_decl, // A = create interface from next B instructions
+    create_field, // field[A] of type B
+
+    fn_decl, // A = create fn with No. B args from next C instructions
+    namespace_decl, // A = create namespace from next B instructions
+
+    argc, // A = No. of args
+    set_arg, // arg[A] = B
+    load_arg, // A = arg(B)
+    set_return_type, // set return type to A
+
+    call, // A = B(No. C args)
+
+    block, // A = block of size B
+    comptime_block, // A = comptime block of size B
+
+    // terminators
+    goto, // goto A
+
+    loop, // loop next A instructions
+    repeat, // repeat loop
+    @"break", // break loop
+
+    @"if", // if A { next B instructions } else { next C instructions }
+    return_fn, // return A from fn
+    return_block, // return A from block
+};
+
+pub const Instruction = packed struct {
+    op: OpCode,
+    a: u32,
+    b: u32,
+    c: u32,
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (self.op) {
+            .nop => try writer.print("nop", .{}),
+
+            .add => try writer.print("{d} = {d} + {d}", .{ self.a, self.b, self.c }),
+            .sub => try writer.print("{d} = {d} - {d}", .{ self.a, self.b, self.c }),
+            .mul => try writer.print("{d} = {d} * {d}", .{ self.a, self.b, self.c }),
+            .div => try writer.print("{d} = {d} + {d}", .{ self.a, self.b, self.c }),
+
+            .cmp_lt => try writer.print("{d} = {d} < {d}", .{ self.a, self.b, self.c }),
+            .cmp_gt => try writer.print("{d} = {d} > {d}", .{ self.a, self.b, self.c }),
+            .cmp_le => try writer.print("{d} = {d} <= {d}", .{ self.a, self.b, self.c }),
+            .cmp_ge => try writer.print("{d} = {d} >= {d}", .{ self.a, self.b, self.c }),
+            .cmp_eq => try writer.print("{d} = {d} == {d}", .{ self.a, self.b, self.c }),
+            .cmp_ne => try writer.print("{d} = {d} != {d}", .{ self.a, self.b, self.c }),
+
+            .negative => try writer.print("{d} = -{d}", .{ self.a, self.b }),
+            .not => try writer.print("{d} = !{d}", .{ self.a, self.b }),
+
+            .cast => try writer.print("{d} = {d} as {d}", .{ self.a, self.b, self.c }),
+            .typeof => try writer.print("{d} = typeof({d})", .{ self.a, self.b }),
+
+            .move => try writer.print("{d} = {d}", .{ self.a, self.b }),
+
+            .load_constant => try writer.print("{d} = constant({d})", .{ self.a, self.b }),
+
+            .load => try writer.print("{d} = load({d})", .{ self.a, self.b }),
+            .store => try writer.print("store({d}) = {d}", .{ self.a, self.b }),
+
+            .create_var => try writer.print("create_var({d} of type {d})", .{ self.a, self.b }),
+            .create_const => try writer.print("create_const({d} of type {d})", .{ self.a, self.b }),
+
+            .struct_decl => try writer.print("{d} = struct_decl(len: {d})", .{ self.a, self.b }),
+            .interface_decl => try writer.print("{d} = interface_decl(len: {d})", .{ self.a, self.b }),
+            .create_field => try writer.print("create_field({d} of type {d})", .{ self.a, self.b }),
+
+            .fn_decl => try writer.print("{d} = fn_decl(argc: {d}, len: {d})", .{ self.a, self.b, self.c }),
+            .namespace_decl => try writer.print("{d} = namespace_decl(len: {d})", .{ self.a, self.b }),
+
+            else => try writer.print("{s} :: {d} {d} {d}", .{
+                @tagName(self.op),
+                self.a,
+                self.b,
+                self.c,
+            }),
+        }
     }
 };
 
@@ -79,7 +213,7 @@ pub const Constants = struct {
     }
 
     pub const Value = union(enum) {
-        pub const Index = enum(usize) {
+        pub const Index = enum(u32) {
             _,
 
             pub fn format(
@@ -140,196 +274,4 @@ pub const Constants = struct {
             }
         }
     };
-};
-
-pub const Inst = union(enum) {
-    nop: struct {},
-
-    add: struct { lhs: Ref, rhs: Ref },
-    sub: struct { lhs: Ref, rhs: Ref },
-    div: struct { lhs: Ref, rhs: Ref },
-    mul: struct { lhs: Ref, rhs: Ref },
-
-    cmp_lt: struct { lhs: Ref, rhs: Ref },
-    cmp_gt: struct { lhs: Ref, rhs: Ref },
-    cmp_le: struct { lhs: Ref, rhs: Ref },
-    cmp_ge: struct { lhs: Ref, rhs: Ref },
-    cmp_eq: struct { lhs: Ref, rhs: Ref },
-    cmp_ne: struct { lhs: Ref, rhs: Ref },
-
-    negate: struct { value: Ref },
-
-    cast: struct { value: Ref, type: Ref },
-    typeof: struct { value: Ref },
-
-    move: struct { value: Ref },
-
-    load_arg: struct { identifier: []const u8 },
-    load_constant: struct { constant: Constants.Value.Index },
-
-    define: struct {
-        identifier: []const u8,
-        type: ?Ref,
-        value: ?Ref,
-        mode: enum { Const, Var },
-    },
-    load: struct { identifier: []const u8 },
-    store: struct { identifier: []const u8, value: Ref },
-
-    block: struct { len: usize },
-    comptime_block: struct { len: usize },
-
-    match: struct {
-        const Arm = struct {
-            value: Ref,
-            len: usize,
-        };
-
-        value: Ref,
-        arms: std.ArrayList(Arm),
-    },
-    @"if": struct {
-        cond: Ref,
-        true_len: usize,
-        false_len: usize,
-    },
-    loop: struct { len: usize },
-    return_block: struct { value: Ref },
-    return_fn: struct { value: Ref },
-    return_fn_nothing,
-
-    namespace_decl: struct {
-        body_len: usize,
-    },
-    struct_decl: struct {
-        const Field = struct {
-            name: []const u8,
-            type: Ref,
-        };
-
-        fields: std.ArrayList(Field),
-        decls: std.ArrayList(Decl),
-    },
-    interface_decl: struct {
-        decls: std.ArrayList(Decl),
-    },
-
-    fn_decl: struct {
-        return_type_len: usize,
-        body_len: usize,
-    },
-
-    call: struct {
-        @"fn": Ref,
-        args: std.ArrayList(Ref),
-    },
-
-    todo,
-
-    pub fn deinit(inst: *Inst) void {
-        switch (inst.*) {
-            .struct_decl => |*n| {
-                n.fields.deinit();
-                n.decls.deinit();
-            },
-            .interface_decl => |*n| {
-                n.decls.deinit();
-            },
-            .call => |n| {
-                n.args.deinit();
-            },
-            else => {},
-        }
-    }
-
-    pub const Decl = struct {
-        name: []const u8,
-        value: Ref,
-    };
-
-    pub fn format(
-        self: @This(),
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        switch (self) {
-            .nop => try writer.print("nop", .{}),
-
-            .add => |v| try writer.print("{s} + {s}", .{ v.lhs, v.rhs }),
-            .sub => |v| try writer.print("{s} - {s}", .{ v.lhs, v.rhs }),
-            .mul => |v| try writer.print("{s} * {s}", .{ v.lhs, v.rhs }),
-            .div => |v| try writer.print("{s} / {s}", .{ v.lhs, v.rhs }),
-
-            .cmp_lt => |v| try writer.print("{s} < {s}", .{ v.lhs, v.rhs }),
-            .cmp_gt => |v| try writer.print("{s} > {s}", .{ v.lhs, v.rhs }),
-            .cmp_le => |v| try writer.print("{s} <= {s}", .{ v.lhs, v.rhs }),
-            .cmp_ge => |v| try writer.print("{s} >= {s}", .{ v.lhs, v.rhs }),
-            .cmp_eq => |v| try writer.print("{s} == {s}", .{ v.lhs, v.rhs }),
-            .cmp_ne => |v| try writer.print("{s} != {s}", .{ v.lhs, v.rhs }),
-
-            .negate => |v| try writer.print("-{s}", .{v.value}),
-
-            .cast => |v| try writer.print("cast({s}, {s})", .{ v.value, v.type }),
-            .typeof => |v| try writer.print("typeof({s})", .{v.value}),
-
-            .move => |v| try writer.print("move({s})", .{v.value}),
-
-            .load_arg => |v| try writer.print("load_arg({s})", .{v.identifier}),
-            .load_constant => |v| try writer.print("load_constant({s})", .{v.constant}),
-
-            .define => |v| try writer.print("define({s}, {?s}, {?s}, {s})", .{
-                v.identifier,
-                v.type,
-                v.value,
-                @tagName(v.mode),
-            }),
-
-            .load => |v| try writer.print("load({s})", .{v.identifier}),
-            .store => |v| try writer.print("store({s}, {s})", .{ v.identifier, v.value }),
-
-            .namespace_decl => |n| {
-                try writer.print("namespace_decl({d})", .{n.body_len});
-            },
-            .struct_decl => |n| {
-                try writer.print("struct_decl(", .{});
-
-                for (n.fields.items) |field| {
-                    try writer.print("{s} = {s},", .{ field.name, field.type });
-                }
-
-                try writer.print(")", .{});
-            },
-            .interface_decl => |n| {
-                try writer.print("interface_decl(", .{});
-
-                for (n.decls.items) |field| {
-                    try writer.print("{s} = {s},", .{ field.name, field.value });
-                }
-
-                try writer.print(")", .{});
-            },
-
-            .block => |v| try writer.print("block({d})", .{v.len}),
-            .comptime_block => |v| try writer.print("comptime_block({d})", .{v.len}),
-
-            .@"if" => |n| try writer.print("if({s}, {d}, {d})", .{
-                n.cond,
-                n.true_len,
-                n.false_len,
-            }),
-
-            .call => |n| {
-                try writer.print("call({s}, {{", .{n.@"fn"});
-                for (n.args.items) |arg| {
-                    try writer.print("{s},", .{arg});
-                }
-                try writer.print("}})", .{});
-            },
-
-            .todo => try writer.print("todo", .{}),
-
-            else => try writer.print("\"{s}\" No Format Prong", .{@tagName(self)}),
-        }
-    }
 };

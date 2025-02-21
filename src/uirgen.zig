@@ -5,7 +5,9 @@ const UIR = @import("uir.zig");
 const AST = @import("ast.zig");
 
 allocator: Allocator,
+register_count: u32 = 0,
 code: UIR,
+scopes: Scopes,
 ast: AST,
 
 const Self = @This();
@@ -14,12 +16,14 @@ pub fn make(allocator: Allocator, ast: AST) Self {
     return Self{
         .allocator = allocator,
         .code = .make(allocator),
+        .scopes = .make(allocator),
         .ast = ast,
     };
 }
 
 pub fn deinit(self: *Self) void {
     self.code.deinit();
+    self.scopes.deinit();
 }
 
 fn getIdent(node: AST.NodeRef) []const u8 {
@@ -29,39 +33,75 @@ fn getIdent(node: AST.NodeRef) []const u8 {
     };
 }
 
-fn emit_as_constant(self: *Self, value: UIR.Constants.Value) UIR.Ref {
+fn emit_as_constant(self: *Self, value: UIR.Constants.Value) u32 {
     const index = self.code.constants.append(value);
-    return self.code.append(.{ .load_constant = .{
-        .constant = index,
-    } });
+    return self.append_return(
+        .load_constant,
+        @intFromEnum(index),
+        0,
+    );
 }
 
-fn emit_as_block(self: *Self, node: AST.NodeRef) UIR.Ref {
-    const block = self.code.append(.{ .block = .{ .len = 0 } });
+fn infer(self: *Self, ref: u32) u32 {
+    return self.append_return(.typeof, ref, 0);
+}
+
+fn temp(self: *Self) u32 {
+    const idx = self.register_count;
+    self.register_count += 1;
+    return idx;
+}
+
+fn append(
+    self: *Self,
+    op: UIR.OpCode,
+    a: u32,
+    b: u32,
+    c: u32,
+) void {
+    self.code.instructions.append(.{
+        .op = op,
+        .a = a,
+        .b = b,
+        .c = c,
+    }) catch unreachable;
+}
+
+fn append_return(
+    self: *Self,
+    op: UIR.OpCode,
+    b: u32,
+    c: u32,
+) u32 {
+    const idx = self.temp();
+
+    self.append(op, idx, b, c);
+
+    return idx;
+}
+
+fn emit_as_block(self: *Self, node: AST.NodeRef) u32 {
+    const idx = self.code.len();
+    const block = self.append_return(.block, 0, 0);
 
     const start = self.code.len();
 
     _ = self.emit(node);
 
-    self.code.get(block).block.len = self.code.len() - start;
+    self.code.get(idx).b = @intCast(self.code.len() - start);
 
     return block;
 }
 
-fn infer(self: *Self, ref: UIR.Ref) UIR.Ref {
-    return self.code.append(.{ .typeof = .{
-        .value = ref,
-    } });
-}
-
-fn emit_as_comptime_block(self: *Self, node: AST.NodeRef) UIR.Ref {
-    const block = self.code.append(.{ .comptime_block = .{ .len = 0 } });
+fn emit_as_comptime_block(self: *Self, node: AST.NodeRef) u32 {
+    const idx = self.code.len();
+    const block = self.append_return(.comptime_block, 0, 0);
 
     const start = self.code.len();
 
     _ = self.emit(node);
 
-    self.code.get(block).block.len = self.code.len() - start;
+    self.code.get(idx).b = @intCast(self.code.len() - start);
 
     return block;
 }
@@ -69,14 +109,12 @@ fn emit_as_comptime_block(self: *Self, node: AST.NodeRef) UIR.Ref {
 fn emit(
     self: *Self,
     node: AST.NodeRef,
-) UIR.Ref {
+) u32 {
     return switch (node.*) {
         .Unary => |n| node: {
             const value = self.emit(n.node);
             break :node switch (n.Op.ty) {
-                .Minus => self.code.append(.{ .negate = .{
-                    .value = value,
-                } }),
+                .Minus => self.append_return(.negative, value, 0),
                 else => unreachable,
             };
         },
@@ -85,39 +123,18 @@ fn emit(
             const rhs = self.emit(n.rhs);
 
             break :node switch (n.Op.ty) {
-                .Plus => self.code.append(.{ .add = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-                .Minus => self.code.append(.{ .sub = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-                .Asterix => self.code.append(.{ .mul = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-                .Slash => self.code.append(.{ .div = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
+                .Plus => self.append_return(.add, lhs, rhs),
+                .Minus => self.append_return(.sub, lhs, rhs),
+                .Asterix => self.append_return(.mul, lhs, rhs),
+                .Slash => self.append_return(.div, lhs, rhs),
 
-                .Less => self.code.append(.{ .cmp_lt = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-                .LessEq => self.code.append(.{ .cmp_le = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-                .Greater => self.code.append(.{ .cmp_gt = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
-                .GreaterEq => self.code.append(.{ .cmp_ge = .{
-                    .lhs = lhs,
-                    .rhs = rhs,
-                } }),
+                .Less => self.append_return(.cmp_lt, lhs, rhs),
+                .LessEq => self.append_return(.cmp_le, lhs, rhs),
+                .Greater => self.append_return(.cmp_gt, lhs, rhs),
+                .GreaterEq => self.append_return(.cmp_ge, lhs, rhs),
+
+                .EqualEqual => self.append_return(.cmp_eq, lhs, rhs),
+                .NotEqual => self.append_return(.cmp_ne, lhs, rhs),
 
                 else => unreachable,
             };
@@ -127,159 +144,114 @@ fn emit(
         .Float => |v| self.emit_as_constant(.{ .float = v }),
         .Bool => |v| self.emit_as_constant(.{ .bool = v }),
         .Ident => |v| node: {
-            break :node self.code.append(.{ .load = .{
-                .identifier = v.text,
-            } });
+            const index = self.scopes.get(v.text) orelse 0;
+            break :node self.append_return(.load, index, 0);
         },
         .FnCall => |n| node: {
-            var args: std.ArrayList(UIR.Ref) = .init(self.allocator);
-            for (n.args.items) |arg| {
-                args.append(self.emit(arg)) catch unreachable;
+            const @"fn" = self.emit(n.@"fn");
+
+            const argc = n.args.items.len;
+            for (n.args.items, 0..) |arg, idx| {
+                const value = self.emit(arg);
+
+                _ = self.append_return(.set_arg, @intCast(idx), value);
             }
 
-            const @"fn" = self.emit(n.@"fn");
-            break :node self.code.append(.{ .call = .{
-                .@"fn" = @"fn",
-                .args = args,
-            } });
+            break :node self.append_return(.call, @"fn", @intCast(argc));
         },
         .FnDecl => |n| node: {
-            const @"fn" = self.code.append(.{ .fn_decl = .{
-                .return_type_len = 0,
-                .body_len = 0,
-            } });
+            const @"fn" = self.append_return(
+                .fn_decl,
+                @intCast(n.params.ParamaterList.items.len),
+                0,
+            );
 
-            var start = self.code.len();
+            const start = self.code.len();
 
-            for (n.params.ParamaterList.items) |param| {
+            for (n.params.ParamaterList.items, 0..) |param, idx| {
+                const param_idx = self.scopes.register(getIdent(param.Paramater.ident));
                 const param_ty = self.emit(param.Paramater.type);
-                _ = self.code.append(.{ .define = .{
-                    .identifier = getIdent(param.Paramater.ident),
-                    .type = param_ty,
-                    .value = null,
-                    .mode = .Var,
-                } });
+
+                const arg_load = self.append_return(
+                    .load_arg,
+                    @intCast(idx),
+                    0,
+                );
+
+                self.append(.create_const, param_idx, param_ty, 0);
+                self.append(.store, param_idx, arg_load, 0);
             }
 
-            _ = self.emit(n.ret);
-            self.code.get(@"fn").fn_decl.return_type_len = self.code.len() - start;
+            const return_type = self.emit(n.ret);
+            self.append(.set_return_type, return_type, 0, 0);
 
-            start = self.code.len();
             _ = self.emit(n.block);
-            self.code.get(@"fn").fn_decl.body_len = self.code.len() - start;
+            self.code.get(@"fn").c = @intCast(self.code.len() - start);
 
             break :node @"fn";
         },
         .Struct => |n| node: {
-            const struct_index = self.code.append(.{ .struct_decl = .{
-                .fields = .init(self.allocator),
-                .decls = .init(self.allocator),
-            } });
-            const @"struct" = &self.code.get(struct_index).struct_decl;
+            const @"struct" = self.append_return(.struct_decl, 0, 0);
+            const start = self.code.len();
 
-            for (n.fields.items) |field| switch (field.*) {
+            for (n.fields.items) |field| _ = switch (field.*) {
                 .Field => |f| {
-                    const ident = getIdent(f.ident);
-                    const ty = self.emit_as_block(f.type orelse unreachable);
+                    const ident = self.scopes.register(getIdent(f.ident));
+                    const ty = self.emit(f.type orelse unreachable);
 
-                    @"struct".fields.append(.{
-                        .name = ident,
-                        .type = ty,
-                    }) catch unreachable;
+                    self.append(.create_field, ident, ty, 0);
                 },
-                .ConstDecl => |c| {
-                    const ident = getIdent(c.ident);
-                    if (c.type) |ty| _ = self.emit_as_block(ty);
-
-                    const value = self.emit_as_block(c.value);
-
-                    @"struct".decls.append(.{
-                        .name = ident,
-                        .value = value,
-                    }) catch unreachable;
-                },
+                .ConstDecl => self.emit(field),
                 else => |f| @panic(@tagName(f)),
             };
 
-            break :node struct_index;
+            self.code.get(@"struct").b = @intCast(self.code.len() - start);
+
+            break :node @"struct";
         },
         .Comptime => |n| self.emit_as_comptime_block(n),
 
         .ConstDecl => |n| node: {
-            const ident = getIdent(n.ident);
+            const ident = self.scopes.register(getIdent(n.ident));
             const value = self.emit(n.value);
             const @"type" = if (n.type) |ty| self.emit(ty) else self.infer(value);
 
-            break :node self.code.append(.{ .define = .{
-                .identifier = ident,
-                .type = @"type",
-                .value = value,
-                .mode = .Const,
-            } });
+            self.append(.create_const, ident, @"type", 0);
+            self.append(.store, ident, value, 0);
+
+            break :node self.append_return(.load, ident, 0);
         },
         .VarDecl => |n| node: {
-            const ident = getIdent(n.ident);
+            const ident = self.scopes.register(getIdent(n.ident));
             const value = self.emit(n.value);
             const @"type" = if (n.type) |ty| self.emit(ty) else self.infer(value);
 
-            break :node self.code.append(.{ .define = .{
-                .identifier = ident,
-                .type = @"type",
-                .value = value,
-                .mode = .Var,
-            } });
+            self.append(.create_var, ident, @"type", 0);
+            self.append(.store, ident, value, 0);
+
+            break :node self.append_return(.load, ident, 0);
         },
         .Assignment => |n| node: {
-            const ident = getIdent(n.ident);
+            const ident = self.scopes.get(getIdent(n.ident)) orelse unreachable;
             const value = self.emit(n.value);
 
-            break :node self.code.append(.{ .store = .{
-                .identifier = ident,
-                .value = value,
-            } });
-        },
-
-        .If => |n| node: {
-            const cond = self.emit(n.cond);
-
-            const @"if" = self.code.append(.{ .@"if" = .{
-                .cond = cond,
-                .true_len = 0,
-                .false_len = 0,
-            } });
-
-            self.code.get(@"if").@"if".true_len = len: {
-                const start = self.code.len();
-                _ = self.emit(n.true);
-                break :len self.code.len() - start;
-            };
-
-            self.code.get(@"if").@"if".false_len = len: {
-                const start = self.code.len();
-                _ = self.emit(n.false);
-                break :len self.code.len() - start;
-            };
-
-            break :node @"if";
+            self.append(.store, ident, value, 0);
+            break :node self.append_return(.load, ident, 0);
         },
 
         .Scope => |lst| node: {
-            const block = self.code.append(.{ .block = .{ .len = 0 } });
+            const block = self.append_return(.block, 0, 0);
 
             const start = self.code.len();
 
             for (lst.items) |n| _ = self.emit(n);
 
-            self.code.get(block).block.len = self.code.len() - start;
+            self.code.get(block).b = @intCast(self.code.len() - start);
 
             break :node block;
         },
-        .Return => |n| self.code.append(.{ .return_fn = .{
-            .value = self.emit(n),
-        } }),
-        .ImplicitReturn => |n| self.code.append(.{ .return_block = .{
-            .value = self.emit(n),
-        } }),
+        .Return => |n| self.append_return(.return_fn, self.emit(n), 0),
+        .ImplicitReturn => |n| self.append_return(.return_fn, self.emit(n), 0),
 
         else => @panic(@tagName(node.*)),
     };
@@ -289,14 +261,13 @@ pub fn run(self: *Self) void {
     if (self.ast.root) |root| {
         switch (root.*) {
             .TopLevelScope => |lst| {
-                const namespace = self.code.append(.{ .namespace_decl = .{
-                    .body_len = 0,
-                } });
+                const namespace = self.append_return(.namespace_decl, 0, 0);
+
                 const start = self.code.len();
 
                 for (lst.items) |n| _ = self.emit(n);
 
-                self.code.get(namespace).namespace_decl.body_len = self.code.len() - start;
+                self.code.get(namespace).b = @intCast(self.code.len() - start);
             },
             else => unreachable,
         }
@@ -310,9 +281,8 @@ pub fn format(
     writer: anytype,
 ) !void {
     try writer.print("len: {d}\n", .{self.code.instructions.items.len});
-    for (self.code.instructions.items, 0..) |inst, idx| {
-        const ref: UIR.Ref = @enumFromInt(idx);
-        try writer.print("{s} = {s}\n", .{ ref, inst });
+    for (self.code.instructions.items) |inst| {
+        try writer.print("{s}\n", .{inst});
     }
 }
 
@@ -320,3 +290,116 @@ pub fn print(self: *Self) void {
     const out = std.debug.print;
     out("{s}\n", .{self.*});
 }
+
+pub const Scopes = struct {
+    allocator: Allocator,
+    list: std.ArrayList(Node),
+    current: ?Index = null,
+    depth: usize = 0,
+    counter: u32 = 0,
+
+    pub fn make(allocator: Allocator) Scopes {
+        return Scopes{
+            .allocator = allocator,
+            .list = .init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Scopes) void {
+        defer self.list.deinit();
+        for (self.list.items) |*scope| {
+            scope.deinit();
+        }
+    }
+
+    pub fn get_scope(self: *Scopes, idx: Index) *Node {
+        return &self.list.items[@intFromEnum(idx)];
+    }
+
+    pub fn get_current(self: *Scopes) ?*Node {
+        return if (self.current) |idx| self.get_scope(idx) else null;
+    }
+
+    pub fn down(self: *Scopes) void {
+        const current = self.get_scope(self.current_scope);
+
+        self.depth += 1;
+
+        const child = Node.makeWithParent(self.allocator, self.depth, self.current_scope);
+        const child_idx = self.list.items.len;
+
+        self.list.append(child) catch unreachable;
+        current.children.append(child_idx) catch unreachable;
+
+        self.current_scope = child_idx;
+    }
+
+    pub fn up(self: *Scopes) void {
+        const current = self.get_scope(self.current_scope);
+
+        if (current.parent) |parent| {
+            self.depth -= 1;
+            self.current_scope = parent;
+        }
+    }
+
+    pub fn register(scopes: *Scopes, ident: []const u8) u32 {
+        const idx = scopes.counter;
+        scopes.counter += 1;
+        if (scopes.get_current()) |current| {
+            current.symbols.put(ident, idx) catch unreachable;
+        }
+        return idx;
+    }
+
+    pub fn get(scopes: *Scopes, ident: []const u8) ?u32 {
+        var current_scope = scopes.get_current();
+
+        while (current_scope) |scope| {
+            if (scope.symbols.get(ident)) |idx| {
+                return idx;
+            }
+
+            current_scope = if (scope.parent) |parent|
+                scopes.get_scope(parent)
+            else
+                null;
+        }
+
+        return null;
+    }
+
+    pub const Node = struct {
+        parent: ?Index = null,
+        depth: usize,
+
+        children: std.ArrayList(Index),
+        symbols: std.StringHashMap(u32),
+
+        pub fn make(allocator: Allocator, depth: usize) Node {
+            return Node{
+                .parent = null,
+                .depth = depth,
+                .children = .init(allocator),
+                .symbols = .init(allocator),
+            };
+        }
+
+        pub fn makeWithParent(allocator: Allocator, depth: usize, parent: Index) Node {
+            return Node{
+                .parent = parent,
+                .depth = depth,
+                .children = .init(allocator),
+                .symbols = .init(allocator),
+            };
+        }
+
+        pub fn deinit(this: *Node) void {
+            this.parent = null;
+            this.children.deinit();
+            this.symbols.deinit();
+        }
+    };
+
+    pub const Index = enum(usize) { _ };
+};

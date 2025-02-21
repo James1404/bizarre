@@ -241,7 +241,7 @@ fn parse_value(self: *Self) AST.NodeRef {
                 @panic(@errorName(err));
             };
 
-            if (self.advanceIf(.Colon) == null) break;
+            if (self.advanceIf(.Comma) == null) break;
         }
 
         if (self.advanceIf(.RParen) == null) {
