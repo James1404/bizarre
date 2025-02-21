@@ -2,42 +2,46 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 allocator: Allocator,
-instructions: std.ArrayList(Instruction),
-constants: Constants,
 bytes: std.ArrayList(u8),
+constants: Constants,
 
 const Self = @This();
 
 pub fn make(allocator: Allocator) Self {
     return Self{
         .allocator = allocator,
-        .instructions = .init(allocator),
+        .bytes = .init(allocator),
         .constants = .make(allocator),
     };
 }
 
 pub fn deinit(self: *Self) void {
-    self.instructions.deinit();
+    self.bytes.deinit();
     self.constants.deinit();
 }
 
-pub fn decode_op(self: *Self, pc: usize) OpCode {
-    return std.mem.bytesAsValue(
-        OpCode,
-        self.bytes.items[pc .. pc + @sizeOf(OpCode)],
-    );
+pub fn decode_op(self: *Self, pc: usize) *OpCode {
+    return @ptrCast(self.bytes.items[pc .. pc + @sizeOf(OpCode)]);
 }
 
-pub fn decode_u32(self: *Self, pc: usize) u32 {
-    return self.bytes.items[pc .. pc + @sizeOf(u32)];
+pub fn decode_u32(self: *Self, pc: usize) *u32 {
+    return @ptrCast(self.bytes.items[pc .. pc + @sizeOf(u32)]);
 }
 
-pub fn get(self: *Self, idx: usize) *Instruction {
-    return &self.instructions.items[idx];
+pub fn encode_op(self: *Self, op: OpCode) usize {
+    const idx = self.len();
+    self.bytes.appendSlice(&std.mem.toBytes(op)) catch unreachable;
+    return idx;
+}
+
+pub fn encode_u32(self: *Self, v: u32) usize {
+    const idx = self.len();
+    self.bytes.appendSlice(&std.mem.toBytes(v)) catch unreachable;
+    return idx;
 }
 
 pub fn len(self: *Self) usize {
-    return self.instructions.items.len;
+    return self.bytes.items.len;
 }
 
 pub const Ref = enum(u32) {
@@ -67,126 +71,63 @@ pub const Ref = enum(u32) {
 // ==========
 
 pub const OpCode = enum(u8) {
-    // Layout
-    // Op A B C
-
     nop,
 
-    add, // A = B + C
-    sub, // A = B - C
-    mul, // A = B * C
-    div, // A = B / C
+    add, // [3;u32] A = B + C
+    sub, // [3;u32] A = B - C
+    mul, // [3;u32] A = B * C
+    div, // [3;u32] A = B / C
 
-    cmp_lt, // A = B < C
-    cmp_gt, // A = B > C
-    cmp_le, // A = B <= C
-    cmp_ge, // A = B >= C
-    cmp_eq, // A = B == C
-    cmp_ne, // A = B != C
+    cmp_lt, // [3;u32] A = B < C
+    cmp_gt, // [3;u32] A = B > C
+    cmp_le, // [3;u32] A = B <= C
+    cmp_ge, // [3;u32] A = B >= C
+    cmp_eq, // [3;u32] A = B == C
+    cmp_ne, // [3;u32] A = B != C
 
-    negative, // A = -B
-    not, // A = !B
+    negative, // [2;u32] A = -B
+    not, // [2;u32] A = !B
 
-    cast, // A = B as C
-    typeof, // A = typeof(B)
+    cast, // [3;u32] A = B as C
+    typeof, // [2;u32] A = typeof(B)
 
-    move, // A = B
+    move, // [2;u32] A = B
 
-    load_constant, // A = constant(B)
+    load_constant, // [2;u32] A = constant(B)
 
-    load, // A = vars[B]
-    store, // vars[A] = B
+    load, // [2;u32] A = vars[B]
+    store, // [2;u32] vars[A] = B
 
-    create_var, // vars[A] with type B
-    create_const, // vars[A] with type B
+    create_var, // [2;u32] vars[A] with type B
+    create_const, // [2;u32] vars[A] with type B
 
-    struct_decl, // A = create struct from next B instructions
-    interface_decl, // A = create interface from next B instructions
-    create_field, // field[A] of type B
+    struct_decl, // [2;u32] A = create struct from next B bytes
+    interface_decl, // [2;u32] A = create interface from next B bytes
+    create_field, // [2;u32] field[A] of type B
 
-    fn_decl, // A = create fn with No. B args from next C instructions
-    namespace_decl, // A = create namespace from next B instructions
+    fn_decl, // [3;u32] A = create fn with No. B args from next C bytes
+    namespace_decl, // [2;u32] A = create namespace from next B bytes
 
-    argc, // A = No. of args
-    set_arg, // arg[A] = B
-    load_arg, // A = arg(B)
-    set_return_type, // set return type to A
+    argc, // [1;u32] A = No. of args
+    set_arg, // [2;u32] arg[A] = B
+    load_arg, // [2;u32] A = arg(B)
+    set_return_type, // [1;u32] set return type to A
 
-    call, // A = B(No. C args)
+    call, // [3;u32] A = B(No. C args)
 
-    block, // A = block of size B
-    comptime_block, // A = comptime block of size B
+    block, // [2;u32] A = block from next B bytes
+    comptime_block, // [2;u32] A = comptime block from next B bytes
 
     // terminators
-    goto, // goto A
+    goto, // [1;u32] goto A
 
-    loop, // loop next A instructions
+    loop, // [1;u32] loop next A bytes
     repeat, // repeat loop
     @"break", // break loop
 
-    @"if", // if A { next B instructions } else { next C instructions }
-    return_fn, // return A from fn
-    return_block, // return A from block
-};
-
-pub const Instruction = packed struct {
-    op: OpCode,
-    a: u32,
-    b: u32,
-    c: u32,
-
-    pub fn format(
-        self: @This(),
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        switch (self.op) {
-            .nop => try writer.print("nop", .{}),
-
-            .add => try writer.print("{d} = {d} + {d}", .{ self.a, self.b, self.c }),
-            .sub => try writer.print("{d} = {d} - {d}", .{ self.a, self.b, self.c }),
-            .mul => try writer.print("{d} = {d} * {d}", .{ self.a, self.b, self.c }),
-            .div => try writer.print("{d} = {d} + {d}", .{ self.a, self.b, self.c }),
-
-            .cmp_lt => try writer.print("{d} = {d} < {d}", .{ self.a, self.b, self.c }),
-            .cmp_gt => try writer.print("{d} = {d} > {d}", .{ self.a, self.b, self.c }),
-            .cmp_le => try writer.print("{d} = {d} <= {d}", .{ self.a, self.b, self.c }),
-            .cmp_ge => try writer.print("{d} = {d} >= {d}", .{ self.a, self.b, self.c }),
-            .cmp_eq => try writer.print("{d} = {d} == {d}", .{ self.a, self.b, self.c }),
-            .cmp_ne => try writer.print("{d} = {d} != {d}", .{ self.a, self.b, self.c }),
-
-            .negative => try writer.print("{d} = -{d}", .{ self.a, self.b }),
-            .not => try writer.print("{d} = !{d}", .{ self.a, self.b }),
-
-            .cast => try writer.print("{d} = {d} as {d}", .{ self.a, self.b, self.c }),
-            .typeof => try writer.print("{d} = typeof({d})", .{ self.a, self.b }),
-
-            .move => try writer.print("{d} = {d}", .{ self.a, self.b }),
-
-            .load_constant => try writer.print("{d} = constant({d})", .{ self.a, self.b }),
-
-            .load => try writer.print("{d} = load({d})", .{ self.a, self.b }),
-            .store => try writer.print("store({d}) = {d}", .{ self.a, self.b }),
-
-            .create_var => try writer.print("create_var({d} of type {d})", .{ self.a, self.b }),
-            .create_const => try writer.print("create_const({d} of type {d})", .{ self.a, self.b }),
-
-            .struct_decl => try writer.print("{d} = struct_decl(len: {d})", .{ self.a, self.b }),
-            .interface_decl => try writer.print("{d} = interface_decl(len: {d})", .{ self.a, self.b }),
-            .create_field => try writer.print("create_field({d} of type {d})", .{ self.a, self.b }),
-
-            .fn_decl => try writer.print("{d} = fn_decl(argc: {d}, len: {d})", .{ self.a, self.b, self.c }),
-            .namespace_decl => try writer.print("{d} = namespace_decl(len: {d})", .{ self.a, self.b }),
-
-            else => try writer.print("{s} :: {d} {d} {d}", .{
-                @tagName(self.op),
-                self.a,
-                self.b,
-                self.c,
-            }),
-        }
-    }
+    @"if", // [4;u32] A = if B { next C bytes } else { next D bytes }
+    return_fn, // [1;u32] return A from fn
+    return_block, // [1;u32] return A from block
 };
 
 pub const Constants = struct {

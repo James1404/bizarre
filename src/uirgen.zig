@@ -52,58 +52,85 @@ fn temp(self: *Self) u32 {
     return idx;
 }
 
-fn append(
-    self: *Self,
-    op: UIR.OpCode,
-    a: u32,
-    b: u32,
-    c: u32,
-) void {
-    self.code.instructions.append(.{
-        .op = op,
-        .a = a,
-        .b = b,
-        .c = c,
-    }) catch unreachable;
-}
-
-fn append_return(
-    self: *Self,
-    op: UIR.OpCode,
-    b: u32,
-    c: u32,
-) u32 {
-    const idx = self.temp();
-
-    self.append(op, idx, b, c);
-
-    return idx;
-}
-
 fn emit_as_block(self: *Self, node: AST.NodeRef) u32 {
-    const idx = self.code.len();
-    const block = self.append_return(.block, 0, 0);
+    const reg = self.temp();
+
+    _ = self.code.encode_op(.block);
+    _ = self.code.encode_u32(reg);
+    const count = self.code.encode_u32(0);
 
     const start = self.code.len();
 
     _ = self.emit(node);
 
-    self.code.get(idx).b = @intCast(self.code.len() - start);
+    self.code.decode_u32(count).* = @intCast(self.code.len() - start);
 
-    return block;
+    return reg;
 }
 
 fn emit_as_comptime_block(self: *Self, node: AST.NodeRef) u32 {
-    const idx = self.code.len();
-    const block = self.append_return(.comptime_block, 0, 0);
+    const reg = self.temp();
+
+    _ = self.code.encode_op(.comptime_block);
+    _ = self.code.encode_u32(reg);
+    const count = self.code.encode_u32(0);
 
     const start = self.code.len();
 
     _ = self.emit(node);
 
-    self.code.get(idx).b = @intCast(self.code.len() - start);
+    self.code.decode_u32(count).* = @intCast(self.code.len() - start);
 
-    return block;
+    return reg;
+}
+
+fn append_tac(self: *Self, op: UIR.OpCode, a: u32, b: u32, c: u32) u32 {
+    const idx = self.code.encode_op(op);
+    _ = self.code.encode_u32(a);
+    _ = self.code.encode_u32(b);
+    _ = self.code.encode_u32(c);
+    return @intCast(idx);
+}
+
+fn append_return(self: *Self, op: UIR.OpCode, b: u32, c: u32) u32 {
+    const reg = self.temp();
+
+    _ = self.code.encode_op(op);
+    _ = self.code.encode_u32(reg);
+    _ = self.code.encode_u32(b);
+    _ = self.code.encode_u32(c);
+
+    return reg;
+}
+
+fn append_var_decl(
+    self: *Self,
+    mode: enum { Var, Const },
+    ident_node: AST.NodeRef,
+    value_node: AST.NodeRef,
+    type_node: ?AST.NodeRef,
+) u32 {
+    const ident = self.scopes.register(getIdent(ident_node));
+    const value = self.emit(value_node);
+    const @"type" = if (type_node) |ty| self.emit(ty) else self.infer(value);
+
+    _ = self.code.encode_op(switch (mode) {
+        .Const => .create_const,
+        .Var => .create_var,
+    });
+    _ = self.code.encode_u32(ident);
+    _ = self.code.encode_u32(@"type");
+
+    _ = self.code.encode_op(.store);
+    _ = self.code.encode_u32(ident);
+    _ = self.code.encode_u32(value);
+
+    const load_reg = self.temp();
+    _ = self.code.encode_op(.load);
+    _ = self.code.encode_u32(load_reg);
+    _ = self.code.encode_u32(ident);
+
+    return load_reg;
 }
 
 fn emit(
@@ -150,21 +177,29 @@ fn emit(
         .FnCall => |n| node: {
             const @"fn" = self.emit(n.@"fn");
 
-            const argc = n.args.items.len;
-            for (n.args.items, 0..) |arg, idx| {
-                const value = self.emit(arg);
+            var args: std.ArrayList(u32) = .init(self.allocator);
+            defer args.deinit();
 
-                _ = self.append_return(.set_arg, @intCast(idx), value);
+            for (n.args.items) |arg| {
+                args.append(self.emit(arg)) catch unreachable;
             }
 
-            break :node self.append_return(.call, @"fn", @intCast(argc));
+            const reg = self.temp();
+            _ = self.code.encode_op(.call);
+            _ = self.code.encode_u32(@"fn");
+            _ = self.code.encode_u32(@intCast(n.args.items.len));
+
+            for (args.items) |arg| {
+                _ = self.code.encode_u32(arg);
+            }
+
+            break :node reg;
         },
         .FnDecl => |n| node: {
-            const @"fn" = self.append_return(
-                .fn_decl,
-                @intCast(n.params.ParamaterList.items.len),
-                0,
-            );
+            const reg = self.temp();
+            _ = self.code.encode_op(.fn_decl);
+            _ = self.code.encode_u32(@intCast(n.params.ParamaterList.items.len));
+            const count = self.code.encode_u32(0);
 
             const start = self.code.len();
 
@@ -178,20 +213,34 @@ fn emit(
                     0,
                 );
 
-                self.append(.create_const, param_idx, param_ty, 0);
-                self.append(.store, param_idx, arg_load, 0);
+                _ = self.code.encode_op(.create_const);
+                _ = self.code.encode_u32(param_idx);
+                _ = self.code.encode_u32(param_ty);
+
+                _ = self.code.encode_op(.store);
+                _ = self.code.encode_u32(param_idx);
+                _ = self.code.encode_u32(arg_load);
+
+                const load_reg = self.temp();
+                _ = self.code.encode_op(.load);
+                _ = self.code.encode_u32(load_reg);
+                _ = self.code.encode_u32(param_idx);
             }
 
             const return_type = self.emit(n.ret);
-            self.append(.set_return_type, return_type, 0, 0);
+            _ = self.code.encode_op(.set_return_type);
+            _ = self.code.encode_u32(return_type);
 
             _ = self.emit(n.block);
-            self.code.get(@"fn").c = @intCast(self.code.len() - start);
+            self.code.decode_u32(count).* = @intCast(self.code.len() - start);
 
-            break :node @"fn";
+            break :node reg;
         },
         .Struct => |n| node: {
-            const @"struct" = self.append_return(.struct_decl, 0, 0);
+            const reg = self.temp();
+            _ = self.code.encode_op(.struct_decl);
+            const count = self.code.encode_u32(0);
+
             const start = self.code.len();
 
             for (n.fields.items) |field| _ = switch (field.*) {
@@ -199,59 +248,72 @@ fn emit(
                     const ident = self.scopes.register(getIdent(f.ident));
                     const ty = self.emit(f.type orelse unreachable);
 
-                    self.append(.create_field, ident, ty, 0);
+                    _ = self.code.encode_op(.create_field);
+                    _ = self.code.encode_u32(ident);
+                    _ = self.code.encode_u32(ty);
                 },
                 .ConstDecl => self.emit(field),
                 else => |f| @panic(@tagName(f)),
             };
 
-            self.code.get(@"struct").b = @intCast(self.code.len() - start);
+            self.code.decode_u32(count).* = @intCast(self.code.len() - start);
 
-            break :node @"struct";
+            break :node reg;
         },
         .Comptime => |n| self.emit_as_comptime_block(n),
 
-        .ConstDecl => |n| node: {
-            const ident = self.scopes.register(getIdent(n.ident));
-            const value = self.emit(n.value);
-            const @"type" = if (n.type) |ty| self.emit(ty) else self.infer(value);
-
-            self.append(.create_const, ident, @"type", 0);
-            self.append(.store, ident, value, 0);
-
-            break :node self.append_return(.load, ident, 0);
-        },
-        .VarDecl => |n| node: {
-            const ident = self.scopes.register(getIdent(n.ident));
-            const value = self.emit(n.value);
-            const @"type" = if (n.type) |ty| self.emit(ty) else self.infer(value);
-
-            self.append(.create_var, ident, @"type", 0);
-            self.append(.store, ident, value, 0);
-
-            break :node self.append_return(.load, ident, 0);
-        },
+        .ConstDecl => |n| self.append_var_decl(.Const, n.ident, n.value, n.type),
+        .VarDecl => |n| self.append_var_decl(.Var, n.ident, n.value, n.type),
         .Assignment => |n| node: {
             const ident = self.scopes.get(getIdent(n.ident)) orelse unreachable;
             const value = self.emit(n.value);
 
-            self.append(.store, ident, value, 0);
-            break :node self.append_return(.load, ident, 0);
+            _ = self.code.encode_op(.store);
+            _ = self.code.encode_u32(ident);
+            _ = self.code.encode_u32(value);
+
+            const load_reg = self.temp();
+            _ = self.code.encode_op(.load);
+            _ = self.code.encode_u32(load_reg);
+            _ = self.code.encode_u32(ident);
+
+            break :node ident;
         },
 
         .Scope => |lst| node: {
-            const block = self.append_return(.block, 0, 0);
+            const reg = self.temp();
+            _ = self.code.encode_op(.block);
+            _ = self.code.encode_u32(reg);
+            const count = self.code.encode_u32(0);
 
             const start = self.code.len();
 
             for (lst.items) |n| _ = self.emit(n);
 
-            self.code.get(block).b = @intCast(self.code.len() - start);
+            self.code.decode_u32(count).* = @intCast(self.code.len() - start);
 
-            break :node block;
+            break :node reg;
         },
-        .Return => |n| self.append_return(.return_fn, self.emit(n), 0),
-        .ImplicitReturn => |n| self.append_return(.return_fn, self.emit(n), 0),
+        .Return => |n| reg: {
+            const reg = self.temp();
+
+            const value = self.emit(n);
+
+            _ = self.code.encode_op(.return_fn);
+            _ = self.code.encode_u32(value);
+
+            break :reg reg;
+        },
+        .ImplicitReturn => |n| reg: {
+            const reg = self.temp();
+
+            const value = self.emit(n);
+
+            _ = self.code.encode_op(.return_fn);
+            _ = self.code.encode_u32(value);
+
+            break :reg reg;
+        },
 
         else => @panic(@tagName(node.*)),
     };
@@ -261,13 +323,17 @@ pub fn run(self: *Self) void {
     if (self.ast.root) |root| {
         switch (root.*) {
             .TopLevelScope => |lst| {
-                const namespace = self.append_return(.namespace_decl, 0, 0);
+                const reg = self.temp();
+
+                _ = self.code.encode_op(.namespace_decl);
+                _ = self.code.encode_u32(reg);
+                const count = self.code.encode_u32(0);
 
                 const start = self.code.len();
 
                 for (lst.items) |n| _ = self.emit(n);
 
-                self.code.get(namespace).b = @intCast(self.code.len() - start);
+                self.code.decode_u32(count).* = @intCast(self.code.len() - start);
             },
             else => unreachable,
         }
@@ -280,10 +346,11 @@ pub fn format(
     _: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
-    try writer.print("len: {d}\n", .{self.code.instructions.items.len});
-    for (self.code.instructions.items) |inst| {
-        try writer.print("{s}\n", .{inst});
-    }
+
+    // todo
+
+    _ = self;
+    _ = writer;
 }
 
 pub fn print(self: *Self) void {
