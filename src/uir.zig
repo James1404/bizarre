@@ -20,11 +20,29 @@ pub fn deinit(self: *Self) void {
     self.constants.deinit();
 }
 
-pub fn decode_op(self: *Self, pc: usize) *OpCode {
+pub fn inc_decode_op(self: *Self, pc: *usize) OpCode {
+    const size = @sizeOf(OpCode);
+    const slice = self.bytes.items[pc.* .. pc.* + size];
+
+    pc.* += size;
+
+    return std.mem.bytesToValue(OpCode, slice);
+}
+
+pub fn inc_decode_u32(self: *Self, pc: *usize) u32 {
+    const size = @sizeOf(u32);
+    const slice = self.bytes.items[pc.* .. pc.* + size];
+
+    pc.* += size;
+
+    return std.mem.bytesToValue(u32, slice);
+}
+
+pub fn decode_op(self: *Self, pc: usize) *align(1) OpCode {
     return @ptrCast(self.bytes.items[pc .. pc + @sizeOf(OpCode)]);
 }
 
-pub fn decode_u32(self: *Self, pc: usize) *u32 {
+pub fn decode_u32(self: *Self, pc: usize) *align(1) u32 {
     return @ptrCast(self.bytes.items[pc .. pc + @sizeOf(u32)]);
 }
 
@@ -40,7 +58,7 @@ pub fn encode_u32(self: *Self, v: u32) usize {
     return idx;
 }
 
-pub fn len(self: *Self) usize {
+pub fn len(self: Self) usize {
     return self.bytes.items.len;
 }
 
@@ -109,11 +127,10 @@ pub const OpCode = enum(u8) {
     namespace_decl, // [2;u32] A = create namespace from next B bytes
 
     argc, // [1;u32] A = No. of args
-    set_arg, // [2;u32] arg[A] = B
     load_arg, // [2;u32] A = arg(B)
     set_return_type, // [1;u32] set return type to A
 
-    call, // [3;u32] A = B(No. C args)
+    call, // [3 + No. C Args;u32] A = B(No. C args)
 
     block, // [2;u32] A = block from next B bytes
     comptime_block, // [2;u32] A = comptime block from next B bytes

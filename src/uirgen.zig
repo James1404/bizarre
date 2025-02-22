@@ -340,22 +340,273 @@ pub fn run(self: *Self) void {
     }
 }
 
-pub fn format(
-    self: Self,
-    comptime _: []const u8,
-    _: std.fmt.FormatOptions,
-    writer: anytype,
+pub fn print(
+    self: *Self,
 ) !void {
+    const writer = std.io.getStdOut().writer();
 
-    // todo
+    try writer.print("len: {d}\n", .{self.code.len()});
 
-    _ = self;
-    _ = writer;
-}
+    var pc: usize = 0;
 
-pub fn print(self: *Self) void {
-    const out = std.debug.print;
-    out("{s}\n", .{self.*});
+    while (pc < self.code.len()) {
+        const op = self.code.inc_decode_op(&pc);
+        switch (op) {
+            .nop => try writer.print("nop", .{}),
+
+            .add => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = {d} + {d}", .{ a, b, c });
+            },
+            .sub => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = {d} - {d}", .{ a, b, c });
+            },
+            .div => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = {d} / {d}", .{ a, b, c });
+            },
+            .mul => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = {d} * {d}", .{ a, b, c });
+            },
+
+            .cmp_lt => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = {d} < {d}", .{ a, b, c });
+            },
+            .cmp_gt => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = {d} > {d}", .{ a, b, c });
+            },
+            .cmp_le => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = {d} <= {d}", .{ a, b, c });
+            },
+            .cmp_ge => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = {d} >= {d}", .{ a, b, c });
+            },
+            .cmp_eq => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = {d} == {d}", .{ a, b, c });
+            },
+            .cmp_ne => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = {d} != {d}", .{ a, b, c });
+            },
+
+            .negative => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = -{d}", .{ a, b });
+            },
+            .not => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = !{d}", .{ a, b });
+            },
+
+            .cast => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = {d} as {d}", .{ a, b, c });
+            },
+            .typeof => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = typeof({d})", .{ a, b });
+            },
+
+            .move => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = {d}", .{ a, b });
+            },
+
+            .load_constant => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = load_constant({d})", .{ a, b });
+            },
+
+            .load => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = load({d})", .{ a, b });
+            },
+            .store => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("store({d}, {d})", .{ a, b });
+            },
+
+            .create_var => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("create_var({d} typeof {d})", .{ a, b });
+            },
+            .create_const => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("create_const({d} typeof {d})", .{ a, b });
+            },
+
+            .struct_decl => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = struct_decl(len: {d})", .{ a, b });
+            },
+            .interface_decl => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = interface_decl(len: {d})", .{ a, b });
+            },
+            .create_field => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("create_field({d} typeof {d})", .{ a, b });
+            },
+
+            .fn_decl => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = fn_decl(argc: {d}, len: {d})", .{ a, b, c });
+            },
+            .namespace_decl => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = namespace_decl(len: {d})", .{ a, b });
+            },
+
+            .argc => {
+                const a = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = argc()", .{a});
+            },
+            .load_arg => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = load_arg({d})", .{ a, b });
+            },
+            .set_return_type => {
+                const a = self.code.inc_decode_u32(&pc);
+
+                try writer.print("set_return_type({d})", .{a});
+            },
+
+            .call => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = call({d}, args: [", .{ a, b });
+                for (0..c) |_| {
+                    try writer.print("{d}, ", .{self.code.inc_decode_u32(&pc)});
+                }
+                try writer.print("])", .{});
+            },
+
+            .block => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = block(len: {d})", .{ a, b });
+            },
+            .comptime_block => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+
+                try writer.print("{d} = comptime_block(len: {d})", .{ a, b });
+            },
+
+            .goto => {
+                const a = self.code.inc_decode_u32(&pc);
+
+                try writer.print("goto {d}", .{a});
+            },
+
+            .loop => {
+                const a = self.code.inc_decode_u32(&pc);
+
+                try writer.print("loop(len: {d})", .{a});
+            },
+            .repeat => try writer.print("repeat", .{}),
+            .@"break" => try writer.print("break", .{}),
+
+            .@"if" => {
+                const a = self.code.inc_decode_u32(&pc);
+                const b = self.code.inc_decode_u32(&pc);
+                const c = self.code.inc_decode_u32(&pc);
+                const d = self.code.inc_decode_u32(&pc);
+
+                try writer.print(
+                    "{d} = if({d}) {{ len: {d} }} else {{ len: {d} }}",
+                    .{ a, b, c, d },
+                );
+            },
+            .return_fn => {
+                const a = self.code.inc_decode_u32(&pc);
+
+                try writer.print("return_fn({d})", .{a});
+            },
+            .return_block => {
+                const a = self.code.inc_decode_u32(&pc);
+
+                try writer.print("return_block({d})", .{a});
+            },
+        }
+
+        try writer.print("\n", .{});
+    }
 }
 
 pub const Scopes = struct {

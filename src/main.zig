@@ -43,7 +43,7 @@ pub fn main() !void {
 
     uirgen.run();
 
-    uirgen.print();
+    try uirgen.print();
 }
 
 test {
