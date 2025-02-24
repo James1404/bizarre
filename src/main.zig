@@ -2,6 +2,7 @@ const std = @import("std");
 const Lexer = @import("lexer.zig");
 const Parser = @import("parser.zig");
 const UIRGen = @import("uirgen.zig");
+const Sema = @import("sema.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -44,6 +45,11 @@ pub fn main() !void {
     uirgen.run();
 
     try uirgen.print();
+
+    var sema = Sema.make(allocator, uirgen.code);
+    defer sema.deinit();
+
+    sema.run();
 }
 
 test {

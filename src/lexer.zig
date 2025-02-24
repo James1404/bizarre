@@ -56,10 +56,13 @@ pub fn run(self: *Self) std.ArrayList(Token) {
             ':' => self.appendSingle(&out, .Colon),
             ';' => self.appendSingle(&out, .Semicolon),
 
-            '+' => self.appendSingle(&out, .Plus),
-            '-' => self.appendSingleOrNext(&out, '>', .Arrow, .Minus),
-            '*' => self.appendSingle(&out, .Asterix),
-            '/' => if (self.next() == '/') {
+            '+' => self.appendSingleOrNext(&out, '=', .PlusEq, .Plus),
+            '-' => self.appendSingleOrNext(&out, '=', .MinusEq, .Minus),
+            '*' => self.appendSingleOrNext(&out, '=', .MulEq, .Asterix),
+            '/' => if (self.next() == '=') {
+                self.advance();
+                self.appendSingle(&out, .DivEq);
+            } else if (self.next() == '/') {
                 while (!self.advanceIf('\n') or !self.advanceIf('\r')) {
                     if (self.EOF()) break;
                     self.advance();

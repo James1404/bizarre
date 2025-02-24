@@ -21,6 +21,12 @@ pub const Ty = enum {
     Slash,
     Percent,
 
+    PlusEq,
+    MulEq,
+    MinusEq,
+    DivEq,
+    ModEq,
+
     Less,
     Greater,
     GreaterEq,

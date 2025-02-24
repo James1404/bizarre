@@ -20,7 +20,7 @@ pub const Ref = enum(usize) {
 };
 
 pub const Chunk = struct {
-    instructions: std.ArrayList(Inst),
+    instructions: std.ArrayList(Instruction),
 
     pub fn make(allocator: Allocator) Chunk {
         return Chunk{
@@ -33,27 +33,25 @@ pub const Chunk = struct {
     }
 };
 
-pub const OpCode = enum(u8) {
-    // Layout
-    // Op A B C
+pub const Instruction = union(enum) {
+    add: struct { dest: Ref, l: Ref, r: Ref },
+    sub: struct { dest: Ref, l: Ref, r: Ref },
+    mul: struct { dest: Ref, l: Ref, r: Ref },
+    div: struct { dest: Ref, l: Ref, r: Ref },
 
-    add, // A = B + C
-    sub, // A = B - C
-    mul, // A = B * C
-    div, // A = B / C
+    cmp_lt: struct { dest: Ref, l: Ref, r: Ref },
+    cmp_gt: struct { dest: Ref, l: Ref, r: Ref },
+    cmp_le: struct { dest: Ref, l: Ref, r: Ref },
+    cmp_ge: struct { dest: Ref, l: Ref, r: Ref },
+    cmp_eq: struct { dest: Ref, l: Ref, r: Ref },
+    cmp_ne: struct { dest: Ref, l: Ref, r: Ref },
 
-    cmp_lt, // A = B < C
-    cmp_gt, // A = B > C
-    cmp_le, // A = B <= C
-    cmp_ge, // A = B >= C
-    cmp_eq, // A = B == C
-    cmp_ne, // A = B != C
+    negate: struct { dest: Ref, value: Ref },
+    not: struct { dest: Ref, value: Ref },
 
-    negate, // A = !B
+    cast: struct { dest: Ref, value: Ref, ty: Ref },
 
-    cast, // A = B as C
-
-    move, // A = B
+    move: struct { dest: Ref, value: Ref },
 
     load, // A = env[string[B..B + C]]
     store, // env[A] = B
@@ -65,13 +63,6 @@ pub const OpCode = enum(u8) {
 
     jump, // jump A
     jump_if, // if A jump B
-};
-
-pub const Inst = packed struct {
-    op: OpCode,
-    a: u32,
-    b: u32,
-    c: u32,
 };
 
 pub const Type = enum(u8) {
@@ -100,5 +91,7 @@ pub const Type = enum(u8) {
 pub const StructDecl = struct {};
 
 pub const Fn = struct {
+    return_type: Type,
+    args: std.ArrayList(Type),
     body: Chunk,
 };

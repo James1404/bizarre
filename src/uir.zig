@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 allocator: Allocator,
 instructions: std.ArrayList(Instruction),
 constants: Constants,
+registers_count: usize = 0,
 variable_mapping: std.ArrayList(VariableDesc),
 
 const Self = @This();
@@ -27,14 +28,14 @@ pub fn deinit(self: *Self) void {
     self.variable_mapping.deinit();
 }
 
-pub fn register_variable(self: *Self, desc: VariableDesc) usize {
+pub fn register_variable(self: *Self, desc: VariableDesc) Variable {
     const idx = self.variable_mapping.items.len;
     self.variable_mapping.append(desc) catch unreachable;
-    return idx;
+    return @enumFromInt(idx);
 }
 
-pub fn get_variable(self: *Self, idx: usize) []const u8 {
-    return self.variable_mapping.items[idx].name;
+pub fn get_variable(self: *Self, variable: Variable) []const u8 {
+    return self.variable_mapping.items[@intFromEnum(variable)].name;
 }
 
 pub fn append(self: *Self, inst: Instruction) usize {
@@ -103,47 +104,64 @@ pub const Instruction = union(enum) {
     load_constant: struct { dest: Ref, index: Constants.Value.Index },
     load_builtin: struct { dest: Ref, builtin: Builtin },
 
-    load: struct { dest: Ref, variable: usize },
-    store: struct { variable: usize, value: Ref },
+    load: struct { dest: Ref, variable: Variable },
+    store: struct { variable: Variable, value: Ref },
 
-    create_var: struct { variable: usize, ty: Ref },
-    create_const: struct { variable: usize, ty: Ref },
+    ref: struct { dest: Ref, value: Ref },
+    deref: struct { dest: Ref, value: Ref },
+
+    create_var: struct { variable: Variable, ty: Ref },
+    create_const: struct { variable: Variable, ty: Ref },
 
     struct_decl: struct {
         dest: Ref,
-        len: u32,
+        len: usize,
     },
     interface_decl: struct {
         dest: Ref,
-        len: u32,
+        len: usize,
     },
     create_field: struct {
-        ident: usize,
+        ident: Variable,
         ty: Ref,
     },
 
-    fn_decl: struct { dest: Ref, argc: u32, len: u32 },
-    namespace_decl: struct { dest: Ref, len: u32 },
+    array_index: struct {
+        dest: Ref,
+        array: Ref,
+        index: Ref,
+    },
+
+    field_access: struct {
+        dest: Ref,
+        value: Ref,
+        field: Variable,
+    },
+
+    fn_decl: struct { dest: Ref, argc: usize, len: usize },
+    namespace_decl: struct { dest: Ref, len: usize },
 
     argc: struct { dest: Ref },
-    load_arg: struct { dest: Ref, arg: u32 },
+    load_arg: struct { dest: Ref, arg: usize },
     set_return_type: struct { ty: Ref },
 
     call: struct { dest: Ref, @"fn": Ref, args: std.ArrayList(Ref) },
 
-    block: struct { dest: Ref, len: u32 },
-    comptime_block: struct { dest: Ref, len: u32 },
+    block: struct { dest: Ref, len: usize },
+    comptime_block: struct { dest: Ref, len: usize },
 
     // control-flow
-    goto: struct { loc: u32 },
+    goto: struct { loc: usize },
 
-    loop: struct { len: u32 },
+    loop: struct { len: usize },
     repeat,
     @"break",
 
-    @"if": struct { dest: Ref, cond: Ref, true_len: u32, false_len: u32 },
+    if_stmt: struct { cond: Ref, true_len: usize, false_len: usize },
+    if_expr: struct { dest: Ref, cond: Ref, true_len: usize, false_len: usize },
+
     return_fn: struct { value: Ref },
-    return_block: struct { value: Ref },
+    return_implicit: struct { value: Ref },
 
     fn deinit(self: *@This()) void {
         switch (self.*) {
@@ -152,6 +170,19 @@ pub const Instruction = union(enum) {
             },
             else => {},
         }
+    }
+};
+
+pub const Variable = enum(usize) {
+    _,
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        try writer.print("{d}", .{@intFromEnum(self)});
     }
 };
 
@@ -195,7 +226,7 @@ pub const Builtin = enum {
         _: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        try writer.print("Builtin({s})", .{@tagName(self)});
+        try writer.print("{s}", .{@tagName(self)});
     }
 };
 
@@ -313,7 +344,7 @@ pub fn print(self: *Self, writer: anytype) !void {
             .not => |v| try writer.print("{s} = !{s}", .{ v.dest, v.value }),
 
             .cast => |v| try writer.print("{s} = {s} as {s}", .{ v.dest, v.value, v.as }),
-            .typeof => |v| try writer.print("{s} = typeof({s})", .{ v.dest, v.value }),
+            .typeof => |v| try writer.print("{s} = typeof {s}", .{ v.dest, v.value }),
 
             .move => |v| try writer.print("{s} = {s}", .{ v.dest, v.value }),
 
@@ -323,11 +354,30 @@ pub fn print(self: *Self, writer: anytype) !void {
             },
             .load_builtin => |v| try writer.print("{s} = {s}", .{ v.dest, v.builtin }),
 
-            .load => |v| try writer.print("{s} = load(\"{s}\")", .{ v.dest, self.get_variable(v.variable) }),
-            .store => |v| try writer.print("{s} = {s}", .{ self.get_variable(v.variable), v.value }),
+            .load => |v| try writer.print("{s} = load(\"{s}\"[{s}])", .{
+                v.dest,
+                self.get_variable(v.variable),
+                v.variable,
+            }),
+            .store => |v| try writer.print("{s}[{s}] = {s}", .{
+                self.get_variable(v.variable),
+                v.variable,
+                v.value,
+            }),
 
-            .create_var => |v| try writer.print("var {s}: {s}", .{ self.get_variable(v.variable), v.ty }),
-            .create_const => |v| try writer.print("const {s}: {s}", .{ self.get_variable(v.variable), v.ty }),
+            .ref => |v| try writer.print("{s} = {s}.&", .{ v.dest, v.value }),
+            .deref => |v| try writer.print("{s} = {s}.*", .{ v.dest, v.value }),
+
+            .create_var => |v| try writer.print("var {s}[{s}]: {s}", .{
+                self.get_variable(v.variable),
+                v.variable,
+                v.ty,
+            }),
+            .create_const => |v| try writer.print("const {s}[{s}]: {s}", .{
+                self.get_variable(v.variable),
+                v.variable,
+                v.ty,
+            }),
 
             .struct_decl => |v| try writer.print(
                 "{s} = struct_decl(len: {d})",
@@ -338,8 +388,22 @@ pub fn print(self: *Self, writer: anytype) !void {
                 .{ v.dest, v.len },
             ),
             .create_field => |v| try writer.print(
-                "create_field(\"{s}\" typeof {s})",
-                .{ self.get_variable(v.ident), v.ty },
+                "field {s}[{s}]: {s}",
+                .{ self.get_variable(v.ident), v.ident, v.ty },
+            ),
+
+            .array_index => |v| try writer.print(
+                "{s} = {s}[{s}]",
+                .{ v.dest, v.array, v.index },
+            ),
+            .field_access => |v| try writer.print(
+                "{s} = {s}.{s}[{s}]",
+                .{
+                    v.dest,
+                    v.value,
+                    self.get_variable(v.field),
+                    v.field,
+                },
             ),
 
             .fn_decl => |v| try writer.print(
@@ -366,12 +430,17 @@ pub fn print(self: *Self, writer: anytype) !void {
             .repeat => try writer.print("repeat", .{}),
             .@"break" => try writer.print("break", .{}),
 
-            .@"if" => |v| try writer.print(
+            .if_expr => |v| try writer.print(
                 "{s} = if({s}, true_len: {d}, false_len: {d})",
                 .{ v.dest, v.cond, v.true_len, v.false_len },
             ),
-            .return_fn => |v| try writer.print("return_fn({s})", .{v.value}),
-            .return_block => |v| try writer.print("return_block({s})", .{v.value}),
+            .if_stmt => |v| try writer.print(
+                "if({s}, true_len: {d}, false_len: {d})",
+                .{ v.cond, v.true_len, v.false_len },
+            ),
+
+            .return_fn => |v| try writer.print("return_fn {s}", .{v.value}),
+            .return_implicit => |v| try writer.print("return_implicit {s}", .{v.value}),
         }
 
         try writer.print("\n", .{});

@@ -27,13 +27,13 @@ pub fn deinit(self: *Self) void {
     self.scopes.deinit();
 }
 
-pub fn register(self: *Self, ident: []const u8) usize {
+pub fn register(self: *Self, ident: []const u8) UIR.Variable {
     const idx = self.code.register_variable(.{ .name = ident });
     self.scopes.add(ident, idx);
     return idx;
 }
 
-pub fn get_variable(self: *Self, ident: []const u8) usize {
+pub fn get_variable(self: *Self, ident: []const u8) UIR.Variable {
     if (self.scopes.get(ident)) |local| {
         return local;
     }
@@ -80,9 +80,9 @@ fn emit_as_block(self: *Self, node: AST.NodeRef) UIR.Ref {
 
     const start = self.code.len();
 
-    _ = self.emit(node);
+    _ = self.emit_expr(node);
 
-    self.code.get(inst).comptime_block.len = @intCast(self.code.len() - start);
+    self.code.get(inst).comptime_block.len = self.code.len() - start;
 
     return reg;
 }
@@ -94,9 +94,9 @@ fn emit_as_comptime_block(self: *Self, node: AST.NodeRef) UIR.Ref {
 
     const start = self.code.len();
 
-    _ = self.emit(node);
+    _ = self.emit_expr(node);
 
-    self.code.get(inst).comptime_block.len = @intCast(self.code.len() - start);
+    self.code.get(inst).comptime_block.len = self.code.len() - start;
 
     return reg;
 }
@@ -105,8 +105,8 @@ fn emit_statement(self: *Self, node: AST.NodeRef) void {
     switch (node.*) {
         .ConstDecl => |n| {
             const ident = self.register(getIdent(n.ident));
-            const value = self.emit(n.value);
-            const @"type" = if (n.type) |ty| self.emit(ty) else self.infer(value);
+            const value = self.emit_expr(n.value);
+            const @"type" = if (n.type) |ty| self.emit_expr(ty) else self.infer(value);
 
             _ = self.code.append(.{ .create_const = .{ .variable = ident, .ty = @"type" } });
             _ = self.code.append(.{ .store = .{
@@ -116,8 +116,8 @@ fn emit_statement(self: *Self, node: AST.NodeRef) void {
         },
         .VarDecl => |n| {
             const ident = self.register(getIdent(n.ident));
-            const value = self.emit(n.value);
-            const @"type" = if (n.type) |ty| self.emit(ty) else self.infer(value);
+            const value = self.emit_expr(n.value);
+            const @"type" = if (n.type) |ty| self.emit_expr(ty) else self.infer(value);
 
             _ = self.code.append(.{ .create_var = .{ .variable = ident, .ty = @"type" } });
             _ = self.code.append(.{ .store = .{
@@ -127,7 +127,7 @@ fn emit_statement(self: *Self, node: AST.NodeRef) void {
         },
         .Assignment => |n| {
             const ident = self.get_variable(getIdent(n.ident));
-            const value = self.emit(n.value);
+            const value = self.emit_expr(n.value);
 
             _ = self.code.append(.{ .store = .{
                 .variable = ident,
@@ -136,26 +136,61 @@ fn emit_statement(self: *Self, node: AST.NodeRef) void {
         },
 
         .Return => |n| {
-            const value = self.emit(n);
-
-            _ = self.code.append(.{ .return_fn = .{ .value = value } });
+            _ = self.code.append(.{ .return_fn = .{
+                .value = self.emit_expr(n),
+            } });
         },
         .ImplicitReturn => |n| {
-            const value = self.emit(n);
-
-            _ = self.code.append(.{ .return_fn = .{ .value = value } });
+            _ = self.code.append(.{ .return_implicit = .{
+                .value = self.emit_expr(n),
+            } });
         },
-        else => _ = self.emit(node),
+
+        .If => |n| {
+            const cond = self.emit_expr(n.cond);
+
+            const inst = self.code.append(.{ .if_stmt = .{
+                .cond = cond,
+                .true_len = 0,
+                .false_len = 0,
+            } });
+
+            {
+                const start = self.code.len();
+                self.scopes.down();
+
+                for (n.true.Scope.items) |item| {
+                    self.emit_statement(item);
+                }
+
+                self.scopes.up();
+                self.code.get(inst).if_expr.true_len = self.code.len() - start;
+            }
+
+            {
+                const start = self.code.len();
+                self.scopes.down();
+
+                for (n.false.Scope.items) |item| {
+                    self.emit_statement(item);
+                }
+
+                self.scopes.up();
+                self.code.get(inst).if_expr.false_len = self.code.len() - start;
+            }
+        },
+
+        else => _ = self.emit_expr(node),
     }
 }
 
-fn emit(
+fn emit_expr(
     self: *Self,
     node: AST.NodeRef,
 ) UIR.Ref {
     return switch (node.*) {
         .Unary => |n| reg: {
-            const value = self.emit(n.node);
+            const value = self.emit_expr(n.node);
             const reg = self.temp();
             _ = switch (n.Op.ty) {
                 .Minus => self.code.append(.{ .negative = .{ .dest = reg, .value = value } }),
@@ -164,8 +199,8 @@ fn emit(
             break :reg reg;
         },
         .Binary => |n| reg: {
-            const lhs = self.emit(n.lhs);
-            const rhs = self.emit(n.rhs);
+            const lhs = self.emit_expr(n.lhs);
+            const rhs = self.emit_expr(n.rhs);
             const reg = self.temp();
 
             _ = switch (n.Op.ty) {
@@ -206,12 +241,12 @@ fn emit(
             break :reg reg;
         },
         .FnCall => |n| reg: {
-            const @"fn" = self.emit(n.@"fn");
+            const @"fn" = self.emit_expr(n.@"fn");
 
             var args: std.ArrayList(UIR.Ref) = .init(self.allocator);
 
             for (n.args.items) |arg| {
-                args.append(self.emit(arg)) catch unreachable;
+                args.append(self.emit_expr(arg)) catch unreachable;
             }
 
             const reg = self.temp();
@@ -229,7 +264,7 @@ fn emit(
             const reg = self.temp();
             const inst = self.code.append(.{ .fn_decl = .{
                 .dest = reg,
-                .argc = @intCast(n.params.ParamaterList.items.len),
+                .argc = n.params.ParamaterList.items.len,
                 .len = 0,
             } });
 
@@ -238,12 +273,12 @@ fn emit(
             for (n.params.ParamaterList.items, 0..) |param, idx| {
                 const ident = getIdent(param.Paramater.ident);
                 const param_idx = self.register(ident);
-                const param_ty = self.emit(param.Paramater.type);
+                const param_ty = self.emit_expr(param.Paramater.type);
 
                 const arg_reg = self.temp();
                 _ = self.code.append(.{ .load_arg = .{
                     .dest = arg_reg,
-                    .arg = @intCast(idx),
+                    .arg = idx,
                 } });
 
                 _ = self.code.append(.{ .create_const = .{
@@ -256,7 +291,7 @@ fn emit(
                 } });
             }
 
-            const return_type = self.emit(n.ret);
+            const return_type = self.emit_expr(n.ret);
             _ = self.code.append(.{ .set_return_type = .{ .ty = return_type } });
 
             switch (n.block.*) {
@@ -268,7 +303,7 @@ fn emit(
                 else => unreachable,
             }
 
-            self.code.get(inst).fn_decl.len = @intCast(self.code.len() - start);
+            self.code.get(inst).fn_decl.len = self.code.len() - start;
 
             self.scopes.up();
 
@@ -283,15 +318,15 @@ fn emit(
             for (n.fields.items) |field| _ = switch (field.*) {
                 .Field => |f| {
                     const ident = self.register(getIdent(f.ident));
-                    const ty = self.emit(f.type orelse unreachable);
+                    const ty = self.emit_expr(f.type orelse unreachable);
 
                     _ = self.code.append(.{ .create_field = .{ .ident = ident, .ty = ty } });
                 },
-                .ConstDecl => self.emit(field),
+                .ConstDecl => self.emit_statement(field),
                 else => |f| @panic(@tagName(f)),
             };
 
-            self.code.get(inst).struct_decl.len = @intCast(self.code.len() - start);
+            self.code.get(inst).struct_decl.len = self.code.len() - start;
 
             break :reg reg;
         },
@@ -312,7 +347,45 @@ fn emit(
 
             self.scopes.up();
 
-            self.code.get(inst).block.len = @intCast(self.code.len() - start);
+            self.code.get(inst).block.len = self.code.len() - start;
+
+            break :reg reg;
+        },
+
+        .If => |n| reg: {
+            const cond = self.emit_expr(n.cond);
+
+            const reg = self.temp();
+            const inst = self.code.append(.{ .if_expr = .{
+                .dest = reg,
+                .cond = cond,
+                .true_len = 0,
+                .false_len = 0,
+            } });
+
+            {
+                const start = self.code.len();
+                self.scopes.down();
+
+                for (n.true.Scope.items) |item| {
+                    self.emit_statement(item);
+                }
+
+                self.scopes.up();
+                self.code.get(inst).if_expr.true_len = self.code.len() - start;
+            }
+
+            {
+                const start = self.code.len();
+                self.scopes.down();
+
+                for (n.false.Scope.items) |item| {
+                    self.emit_statement(item);
+                }
+
+                self.scopes.up();
+                self.code.get(inst).if_expr.false_len = self.code.len() - start;
+            }
 
             break :reg reg;
         },
@@ -333,7 +406,9 @@ pub fn run(self: *Self) void {
 
                 for (lst.items) |n| self.emit_statement(n);
 
-                self.code.get(inst).namespace_decl.len = @intCast(self.code.len() - start);
+                self.code.get(inst).namespace_decl.len = self.code.len() - start;
+
+                self.code.registers_count = self.register_count;
             },
             else => unreachable,
         }
@@ -389,7 +464,7 @@ pub const Scopes = struct {
 
     pub const Local = struct {
         name: []const u8,
-        mapping: usize,
+        mapping: UIR.Variable,
         depth: usize,
     };
 
@@ -403,7 +478,7 @@ pub const Scopes = struct {
         scopes.stack.deinit();
     }
 
-    pub fn get(scopes: *Scopes, name: []const u8) ?usize {
+    pub fn get(scopes: *Scopes, name: []const u8) ?UIR.Variable {
         const len = scopes.stack.items.len;
         if (len == 0) return null;
 
@@ -420,7 +495,7 @@ pub const Scopes = struct {
         return null;
     }
 
-    pub fn add(scopes: *Scopes, name: []const u8, mapping: usize) void {
+    pub fn add(scopes: *Scopes, name: []const u8, mapping: UIR.Variable) void {
         scopes.stack.append(.{
             .name = name,
             .mapping = mapping,

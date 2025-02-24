@@ -2,7 +2,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const UIR = @import("uir.zig");
 
-registers: std.ArrayList(Value),
+allocator: Allocator,
+registers: []Value,
+variables: []Value,
 call_stack: std.ArrayList(usize),
 pc: usize,
 code: UIR,
@@ -11,7 +13,15 @@ const Self = @This();
 
 pub fn make(allocator: Allocator, code: UIR) Self {
     return Self{
-        .registers = .init(allocator),
+        .allocator = allocator,
+        .registers = allocator.alloc(
+            Value,
+            code.registers_count,
+        ) catch unreachable,
+        .variables = allocator.alloc(
+            Value,
+            code.variable_mapping.items.len,
+        ) catch unreachable,
         .call_stack = .init(allocator),
         .pc = 0,
         .code = code,
@@ -19,19 +29,41 @@ pub fn make(allocator: Allocator, code: UIR) Self {
 }
 
 pub fn deinit(self: *Self) void {
-    self.registers.deinit();
+    self.allocator.free(self.registers);
+    self.allocator.free(self.variables);
     self.call_stack.deinit();
 }
 
 pub fn run(self: *Self) void {
     while (self.pc < self.code.len()) {
-        const bytes = self.code.fetch(self.pc);
-        const inst = self.code.decode(bytes);
+        const inst = self.code.get(self.pc);
 
-        switch (inst.op) {
-            else => {}, // TODO: Implement
+        switch (inst.*) {
+            .load => |n| self.set_register(n.dest, self.get_variable(n.variable)),
+            .store => |n| self.set_variable(n.variable, self.get_register(n.value)),
+
+            else => std.debug.panic(
+                "Sema: \"{s}\" not implemented",
+                .{@tagName(inst.*)},
+            ),
         }
     }
+}
+
+pub fn set_register(self: *Self, ref: UIR.Ref, value: Value) void {
+    self.registers[@intFromEnum(ref)] = value;
+}
+
+pub fn get_register(self: *Self, ref: UIR.Ref) Value {
+    return self.registers[@intFromEnum(ref)];
+}
+
+pub fn set_variable(self: *Self, variable: UIR.Variable, value: Value) void {
+    self.variables[@intFromEnum(variable)] = value;
+}
+
+pub fn get_variable(self: *Self, variable: UIR.Variable) Value {
+    return self.variables[@intFromEnum(variable)];
 }
 
 pub const Value = union(enum) {
