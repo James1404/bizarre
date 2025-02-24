@@ -49,4 +49,28 @@ bb0:
     %0 = fn_ref(0);
     return %0;
 }
+
+
+
+
+
+
+
+print(3 * 25);
+
+%0 = int(3);
+%1 = int(25);
+%2 = %0 * %1;
+%3 = load_var("print");
+%4 = call %3 1 %2;
+
+int :: %0 3;
+int :: %1 25;
+mul :: %2 %0 %1;
+load_var :: %3 "print";
+call :: %4 %3 1 %2;
+
+opcode : u8
+
+
 */
