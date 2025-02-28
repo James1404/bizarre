@@ -20,7 +20,7 @@ pub fn make(allocator: Allocator, code: UIR) Self {
         ) catch unreachable,
         .variables = allocator.alloc(
             Value,
-            code.variable_mapping.items.len,
+            code.mapping.items.len,
         ) catch unreachable,
         .call_stack = .init(allocator),
         .pc = 0,
@@ -34,9 +34,9 @@ pub fn deinit(self: *Self) void {
     self.call_stack.deinit();
 }
 
-pub fn run(self: *Self) void {
-    while (self.pc < self.code.len()) {
-        const inst = self.code.get(self.pc);
+pub fn eval_chunk(self: *Self, chunk: *UIR.Chunk) void {
+    while (self.pc < chunk.len()) {
+        const inst = chunk.get(self.pc);
 
         switch (inst.*) {
             .load => |n| self.set_register(n.dest, self.get_variable(n.variable)),

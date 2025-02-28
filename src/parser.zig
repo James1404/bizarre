@@ -83,9 +83,6 @@ fn advanceIf(self: *Self, expected: Token.Ty) ?Token {
     return null;
 }
 
-// fn parse_if(self: *Self) AST.NodeRef {
-//     const start = self.getCurrent();
-
 fn parse_fnDecl(self: *Self) AST.NodeRef {
     const start = self.getCurrent();
 

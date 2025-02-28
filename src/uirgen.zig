@@ -27,15 +27,20 @@ pub fn deinit(self: *Self) void {
     self.scopes.deinit();
 }
 
-pub fn register(self: *Self, ident: []const u8) UIR.Variable {
-    const idx = self.code.register_variable(.{ .name = ident });
-    self.scopes.add(ident, idx);
-    return idx;
+fn register(
+    self: *Self,
+    chunk: *UIR.Chunk,
+    ident: []const u8,
+    mode: Scopes.Local.Mode,
+) UIR.Ref {
+    const reg = chunk.reg();
+    self.scopes.add(ident, reg, mode);
+    return reg;
 }
 
-pub fn get_variable(self: *Self, ident: []const u8) UIR.Variable {
+fn get_variable(self: *Self, ident: []const u8) UIR.Ref {
     if (self.scopes.get(ident)) |local| {
-        return local;
+        return local.ref;
     }
 
     std.log.err("Variable \"{s}\" is not defined", .{ident});
@@ -49,11 +54,11 @@ fn getIdent(node: AST.NodeRef) []const u8 {
     };
 }
 
-fn emit_as_constant(self: *Self, value: UIR.Constants.Value) UIR.Ref {
-    const reg = self.temp();
+fn emit_as_constant(self: *Self, chunk: *UIR.Chunk, value: UIR.Constants.Value) UIR.Ref {
+    const reg = chunk.reg();
     const index = self.code.constants.append(value);
 
-    _ = self.code.append(.{ .load_constant = .{
+    _ = chunk.append(.{ .load_constant = .{
         .dest = reg,
         .index = index,
     } });
@@ -61,196 +66,317 @@ fn emit_as_constant(self: *Self, value: UIR.Constants.Value) UIR.Ref {
     return reg;
 }
 
-fn infer(self: *Self, ref: UIR.Ref) UIR.Ref {
-    const reg = self.temp();
-    _ = self.code.append(.{ .typeof = .{ .dest = reg, .value = ref } });
+fn infer(_: *Self, chunk: *UIR.Chunk, ref: UIR.Ref) UIR.Ref {
+    const reg = chunk.reg();
+    _ = chunk.append(.{ .typeof = .{ .dest = reg, .value = ref } });
     return reg;
 }
 
-fn temp(self: *Self) UIR.Ref {
-    const idx = self.register_count;
-    self.register_count += 1;
-    return @enumFromInt(idx);
-}
+fn emit_as_block(self: *Self, chunk: *UIR.Chunk, node: AST.NodeRef) UIR.Ref {
+    const reg = chunk.reg();
 
-fn emit_as_block(self: *Self, node: AST.NodeRef) UIR.Ref {
-    const reg = self.temp();
+    const inst = chunk.append(.{ .block = .{ .dest = reg, .len = 0 } });
 
-    const inst = self.code.append(.{ .block = .{ .dest = reg, .len = 0 } });
+    const start = chunk.len();
 
-    const start = self.code.len();
+    _ = self.emit_expr(chunk, node);
 
-    _ = self.emit_expr(node);
-
-    self.code.get(inst).comptime_block.len = self.code.len() - start;
+    chunk.get(inst).comptime_block.len = chunk.len() - start;
 
     return reg;
 }
 
-fn emit_as_comptime_block(self: *Self, node: AST.NodeRef) UIR.Ref {
-    const reg = self.temp();
+fn emit_as_comptime_block(self: *Self, chunk: *UIR.Chunk, node: AST.NodeRef) UIR.Ref {
+    const reg = chunk.reg();
 
-    const inst = self.code.append(.{ .comptime_block = .{ .dest = reg, .len = 0 } });
+    const inst = chunk.append(.{ .comptime_block = .{ .dest = reg, .len = 0 } });
 
-    const start = self.code.len();
+    const start = chunk.len();
 
-    _ = self.emit_expr(node);
+    _ = self.emit_expr(chunk, node);
 
-    self.code.get(inst).comptime_block.len = self.code.len() - start;
+    chunk.get(inst).comptime_block.len = chunk.len() - start;
 
     return reg;
 }
 
-fn emit_statement(self: *Self, node: AST.NodeRef) void {
+fn emit_statement(self: *Self, chunk: *UIR.Chunk, node: AST.NodeRef) void {
     switch (node.*) {
         .ConstDecl => |n| {
-            const ident = self.register(getIdent(n.ident));
-            const value = self.emit_expr(n.value);
-            const @"type" = if (n.type) |ty| self.emit_expr(ty) else self.infer(value);
+            const ident = self.register(chunk, getIdent(n.ident), .Local);
 
-            _ = self.code.append(.{ .create_const = .{ .variable = ident, .ty = @"type" } });
-            _ = self.code.append(.{ .store = .{
-                .variable = ident,
+            const value = self.emit_expr(chunk, n.value);
+            const @"type" = if (n.type) |ty|
+                self.emit_expr(chunk, ty)
+            else
+                self.infer(chunk, value);
+
+            _ = chunk.append(.{ .typed_value = .{
+                .dest = ident,
                 .value = value,
+                .ty = @"type",
             } });
         },
         .VarDecl => |n| {
-            const ident = self.register(getIdent(n.ident));
-            const value = self.emit_expr(n.value);
-            const @"type" = if (n.type) |ty| self.emit_expr(ty) else self.infer(value);
+            const ident = self.register(chunk, getIdent(n.ident), .Local);
 
-            _ = self.code.append(.{ .create_var = .{ .variable = ident, .ty = @"type" } });
-            _ = self.code.append(.{ .store = .{
-                .variable = ident,
+            const value = self.emit_expr(chunk, n.value);
+            const @"type" = if (n.type) |ty|
+                self.emit_expr(chunk, ty)
+            else
+                self.infer(chunk, value);
+
+            _ = chunk.append(.{ .typed_value = .{
+                .dest = ident,
                 .value = value,
+                .ty = @"type",
             } });
         },
         .Assignment => |n| {
-            const ident = self.get_variable(getIdent(n.ident));
-            const value = self.emit_expr(n.value);
+            const reg = self.get_variable(getIdent(n.ident));
+            const value = self.emit_expr(chunk, n.value);
 
-            _ = self.code.append(.{ .store = .{
-                .variable = ident,
+            _ = chunk.append(.{ .store = .{
+                .ref = reg,
                 .value = value,
             } });
         },
 
         .Return => |n| {
-            _ = self.code.append(.{ .return_fn = .{
-                .value = self.emit_expr(n),
+            _ = chunk.append(.{ .@"return" = .{
+                .value = self.emit_expr(chunk, n),
             } });
         },
         .ImplicitReturn => |n| {
-            _ = self.code.append(.{ .return_implicit = .{
-                .value = self.emit_expr(n),
+            _ = chunk.append(.{ .return_implicit = .{
+                .value = self.emit_expr(chunk, n),
             } });
         },
 
         .If => |n| {
-            const cond = self.emit_expr(n.cond);
+            const cond = self.emit_expr(chunk, n.cond);
 
-            const inst = self.code.append(.{ .if_stmt = .{
+            const inst = chunk.append(.{ .if_stmt = .{
                 .cond = cond,
                 .true_len = 0,
                 .false_len = 0,
             } });
 
             {
-                const start = self.code.len();
+                const start = chunk.len();
                 self.scopes.down();
 
                 for (n.true.Scope.items) |item| {
-                    self.emit_statement(item);
+                    self.emit_statement(chunk, item);
                 }
 
                 self.scopes.up();
-                self.code.get(inst).if_expr.true_len = self.code.len() - start;
+                chunk.get(inst).if_expr.true_len = chunk.len() - start;
             }
 
             {
-                const start = self.code.len();
+                const start = chunk.len();
                 self.scopes.down();
 
                 for (n.false.Scope.items) |item| {
-                    self.emit_statement(item);
+                    self.emit_statement(chunk, item);
                 }
 
                 self.scopes.up();
-                self.code.get(inst).if_expr.false_len = self.code.len() - start;
+                chunk.get(inst).if_expr.false_len = chunk.len() - start;
             }
         },
 
-        else => _ = self.emit_expr(node),
+        else => _ = self.emit_expr(chunk, node),
     }
+}
+
+fn emit_global_statement(self: *Self, node: AST.NodeRef) void {
+    switch (node.*) {
+        .ConstDecl => |n| {
+            var chunk = UIR.Chunk.make(self.allocator);
+
+            _ = self.register(&chunk, getIdent(n.ident), .Local);
+
+            const mode: UIR.Decl.Mode = switch (n.value.*) {
+                .FnDecl => mode: {
+                    self.emit_fn_decl(&chunk, n.value);
+                    break :mode .Fn;
+                },
+                else => mode: {
+                    const value = self.emit_expr(&chunk, n.value);
+
+                    const @"type" = if (n.type) |ty|
+                        self.emit_expr(&chunk, ty)
+                    else
+                        self.infer(&chunk, value);
+
+                    const ret = chunk.reg();
+                    _ = chunk.append(.{ .typed_value = .{
+                        .dest = ret,
+                        .value = value,
+                        .ty = @"type",
+                    } });
+                    _ = chunk.append(.{ .@"return" = .{ .value = ret } });
+
+                    break :mode .Const;
+                },
+            };
+
+            _ = self.code.add_decl(.{ .chunk = chunk, .mode = mode });
+        },
+        .VarDecl => |n| {
+            var chunk = UIR.Chunk.make(self.allocator);
+
+            _ = self.register(&chunk, getIdent(n.ident), .Local);
+
+            const mode: UIR.Decl.Mode = switch (n.value.*) {
+                .FnDecl => mode: {
+                    self.emit_fn_decl(&chunk, n.value);
+                    break :mode .Fn;
+                },
+                else => mode: {
+                    const value = self.emit_expr(&chunk, n.value);
+
+                    const @"type" = if (n.type) |ty|
+                        self.emit_expr(&chunk, ty)
+                    else
+                        self.infer(&chunk, value);
+
+                    const ret = chunk.reg();
+                    _ = chunk.append(.{ .typed_value = .{
+                        .dest = ret,
+                        .value = value,
+                        .ty = @"type",
+                    } });
+                    _ = chunk.append(.{ .@"return" = .{ .value = ret } });
+
+                    break :mode .Var;
+                },
+            };
+
+            _ = self.code.add_decl(.{ .chunk = chunk, .mode = mode });
+        },
+        else => std.debug.panic(
+            "Invalid Toplevel statement: {s}",
+            .{@tagName(node.*)},
+        ),
+    }
+}
+
+fn emit_fn_decl(
+    self: *Self,
+    chunk: *UIR.Chunk,
+    node: AST.NodeRef,
+) void {
+    const n = node.FnDecl;
+    self.scopes.down();
+
+    _ = chunk.append(.{ .set_argc = .{
+        .len = n.params.ParamaterList.items.len,
+    } });
+
+    for (n.params.ParamaterList.items, 0..) |param, idx| {
+        const arg_reg = chunk.reg();
+        _ = chunk.append(.{ .load_arg = .{
+            .dest = arg_reg,
+            .arg = idx,
+        } });
+
+        const param_ty = self.emit_expr(chunk, param.Paramater.type);
+
+        const ident = getIdent(param.Paramater.ident);
+        const param_reg = self.register(chunk, ident, .Arg);
+        _ = chunk.append(.{ .typed_value = .{
+            .dest = param_reg,
+            .value = arg_reg,
+            .ty = param_ty,
+        } });
+    }
+
+    const return_type = self.emit_expr(chunk, n.ret);
+    _ = chunk.append(.{ .set_return_type = .{ .ty = return_type } });
+
+    switch (n.block.*) {
+        .Scope => |lst| {
+            for (lst.items) |item| {
+                self.emit_statement(chunk, item);
+            }
+        },
+        else => unreachable,
+    }
+
+    self.scopes.up();
 }
 
 fn emit_expr(
     self: *Self,
+    chunk: *UIR.Chunk,
     node: AST.NodeRef,
 ) UIR.Ref {
     return switch (node.*) {
         .Unary => |n| reg: {
-            const value = self.emit_expr(n.node);
-            const reg = self.temp();
+            const value = self.emit_expr(chunk, n.node);
+            const reg = chunk.reg();
             _ = switch (n.Op.ty) {
-                .Minus => self.code.append(.{ .negative = .{ .dest = reg, .value = value } }),
+                .Minus => chunk.append(.{ .negative = .{ .dest = reg, .value = value } }),
                 else => unreachable,
             };
             break :reg reg;
         },
         .Binary => |n| reg: {
-            const lhs = self.emit_expr(n.lhs);
-            const rhs = self.emit_expr(n.rhs);
-            const reg = self.temp();
+            const lhs = self.emit_expr(chunk, n.lhs);
+            const rhs = self.emit_expr(chunk, n.rhs);
+            const reg = chunk.reg();
 
             _ = switch (n.Op.ty) {
-                .Plus => self.code.append(.{ .add = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .Minus => self.code.append(.{ .sub = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .Asterix => self.code.append(.{ .mul = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .Slash => self.code.append(.{ .div = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .Plus => chunk.append(.{ .add = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .Minus => chunk.append(.{ .sub = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .Asterix => chunk.append(.{ .mul = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .Slash => chunk.append(.{ .div = .{ .dest = reg, .l = lhs, .r = rhs } }),
 
-                .Less => self.code.append(.{ .cmp_lt = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .LessEq => self.code.append(.{ .cmp_le = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .Greater => self.code.append(.{ .cmp_gt = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .GreaterEq => self.code.append(.{ .cmp_ge = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .Less => chunk.append(.{ .cmp_lt = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .LessEq => chunk.append(.{ .cmp_le = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .Greater => chunk.append(.{ .cmp_gt = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .GreaterEq => chunk.append(.{ .cmp_ge = .{ .dest = reg, .l = lhs, .r = rhs } }),
 
-                .EqualEqual => self.code.append(.{ .cmp_eq = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .NotEqual => self.code.append(.{ .cmp_ne = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .EqualEqual => chunk.append(.{ .cmp_eq = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .NotEqual => chunk.append(.{ .cmp_ne = .{ .dest = reg, .l = lhs, .r = rhs } }),
 
                 else => unreachable,
             };
             break :reg reg;
         },
-        .String => |v| self.emit_as_constant(.{ .string = v }),
-        .Int => |v| self.emit_as_constant(.{ .int = v }),
-        .Float => |v| self.emit_as_constant(.{ .float = v }),
-        .Bool => |v| self.emit_as_constant(.{ .bool = v }),
+        .String => |v| self.emit_as_constant(chunk, .{ .string = v }),
+        .Int => |v| self.emit_as_constant(chunk, .{ .int = v }),
+        .Float => |v| self.emit_as_constant(chunk, .{ .float = v }),
+        .Bool => |v| self.emit_as_constant(chunk, .{ .bool = v }),
         .Ident => |v| reg: {
-            const reg = self.temp();
+            const reg = chunk.reg();
 
             if (UIR.Builtin.fromString(v.text)) |builtin| {
-                _ = self.code.append(.{ .load_builtin = .{
+                _ = chunk.append(.{ .load_builtin = .{
                     .dest = reg,
                     .builtin = builtin,
                 } });
             } else {
-                const index = self.get_variable(v.text);
-                _ = self.code.append(.{ .load = .{ .dest = reg, .variable = index } });
+                const ref = self.get_variable(v.text);
+                _ = chunk.append(.{ .load = .{ .dest = reg, .ref = ref } });
             }
 
             break :reg reg;
         },
         .FnCall => |n| reg: {
-            const @"fn" = self.emit_expr(n.@"fn");
+            const @"fn" = self.emit_expr(chunk, n.@"fn");
 
             var args: std.ArrayList(UIR.Ref) = .init(self.allocator);
 
             for (n.args.items) |arg| {
-                args.append(self.emit_expr(arg)) catch unreachable;
+                args.append(self.emit_expr(chunk, arg)) catch unreachable;
             }
 
-            const reg = self.temp();
-            _ = self.code.append(.{ .call = .{
+            const reg = chunk.reg();
+            _ = chunk.append(.{ .call = .{
                 .dest = reg,
                 .@"fn" = @"fn",
                 .args = args,
@@ -258,105 +384,75 @@ fn emit_expr(
 
             break :reg reg;
         },
-        .FnDecl => |n| reg: {
-            self.scopes.down();
+        .FnDecl => |_| reg: {
+            var body = UIR.Chunk.make(self.allocator);
 
-            const reg = self.temp();
-            const inst = self.code.append(.{ .fn_decl = .{
+            self.emit_fn_decl(&body, node);
+
+            const index = self.code.add_decl(.{
+                .chunk = body,
+                .mode = .Fn,
+            });
+
+            const reg = chunk.reg();
+            _ = chunk.append(.{ .load_decl = .{
                 .dest = reg,
-                .argc = n.params.ParamaterList.items.len,
-                .len = 0,
+                .index = index,
             } });
-
-            const start = self.code.len();
-
-            for (n.params.ParamaterList.items, 0..) |param, idx| {
-                const ident = getIdent(param.Paramater.ident);
-                const param_idx = self.register(ident);
-                const param_ty = self.emit_expr(param.Paramater.type);
-
-                const arg_reg = self.temp();
-                _ = self.code.append(.{ .load_arg = .{
-                    .dest = arg_reg,
-                    .arg = idx,
-                } });
-
-                _ = self.code.append(.{ .create_const = .{
-                    .variable = param_idx,
-                    .ty = param_ty,
-                } });
-                _ = self.code.append(.{ .store = .{
-                    .variable = param_idx,
-                    .value = arg_reg,
-                } });
-            }
-
-            const return_type = self.emit_expr(n.ret);
-            _ = self.code.append(.{ .set_return_type = .{ .ty = return_type } });
-
-            switch (n.block.*) {
-                .Scope => |lst| {
-                    for (lst.items) |item| {
-                        self.emit_statement(item);
-                    }
-                },
-                else => unreachable,
-            }
-
-            self.code.get(inst).fn_decl.len = self.code.len() - start;
-
-            self.scopes.up();
 
             break :reg reg;
         },
         .Struct => |n| reg: {
-            const reg = self.temp();
-            const inst = self.code.append(.{ .struct_decl = .{ .dest = reg, .len = 0 } });
+            const reg = chunk.reg();
+            const inst = chunk.append(.{ .struct_decl = .{ .dest = reg, .len = 0 } });
 
-            const start = self.code.len();
+            const start = chunk.len();
 
+            var field_len: usize = 0;
             for (n.fields.items) |field| _ = switch (field.*) {
                 .Field => |f| {
-                    const ident = self.register(getIdent(f.ident));
-                    const ty = self.emit_expr(f.type orelse unreachable);
-
-                    _ = self.code.append(.{ .create_field = .{ .ident = ident, .ty = ty } });
+                    const ty = self.emit_expr(chunk, f.type orelse unreachable);
+                    _ = chunk.append(.{ .create_field = .{
+                        .index = field_len,
+                        .ty = ty,
+                    } });
+                    field_len += 1;
                 },
-                .ConstDecl => self.emit_statement(field),
+                .ConstDecl => self.emit_statement(chunk, field),
                 else => |f| @panic(@tagName(f)),
             };
 
-            self.code.get(inst).struct_decl.len = self.code.len() - start;
+            chunk.get(inst).struct_decl.len = chunk.len() - start;
 
             break :reg reg;
         },
-        .Comptime => |n| self.emit_as_comptime_block(n),
+        .Comptime => |n| self.emit_as_comptime_block(chunk, n),
 
         .Scope => |lst| reg: {
-            const reg = self.temp();
-            const inst = self.code.append(.{ .block = .{
+            const reg = chunk.reg();
+            const inst = chunk.append(.{ .block = .{
                 .dest = reg,
                 .len = 0,
             } });
 
-            const start = self.code.len();
+            const start = chunk.len();
 
             self.scopes.down();
 
-            for (lst.items) |n| _ = self.emit_statement(n);
+            for (lst.items) |n| _ = self.emit_statement(chunk, n);
 
             self.scopes.up();
 
-            self.code.get(inst).block.len = self.code.len() - start;
+            chunk.get(inst).block.len = chunk.len() - start;
 
             break :reg reg;
         },
 
         .If => |n| reg: {
-            const cond = self.emit_expr(n.cond);
+            const cond = self.emit_expr(chunk, n.cond);
 
-            const reg = self.temp();
-            const inst = self.code.append(.{ .if_expr = .{
+            const reg = chunk.reg();
+            const inst = chunk.append(.{ .if_expr = .{
                 .dest = reg,
                 .cond = cond,
                 .true_len = 0,
@@ -364,27 +460,27 @@ fn emit_expr(
             } });
 
             {
-                const start = self.code.len();
+                const start = chunk.len();
                 self.scopes.down();
 
                 for (n.true.Scope.items) |item| {
-                    self.emit_statement(item);
+                    self.emit_statement(chunk, item);
                 }
 
                 self.scopes.up();
-                self.code.get(inst).if_expr.true_len = self.code.len() - start;
+                chunk.get(inst).if_expr.true_len = chunk.len() - start;
             }
 
             {
-                const start = self.code.len();
+                const start = chunk.len();
                 self.scopes.down();
 
                 for (n.false.Scope.items) |item| {
-                    self.emit_statement(item);
+                    self.emit_statement(chunk, item);
                 }
 
                 self.scopes.up();
-                self.code.get(inst).if_expr.false_len = self.code.len() - start;
+                chunk.get(inst).if_expr.false_len = chunk.len() - start;
             }
 
             break :reg reg;
@@ -398,16 +494,7 @@ pub fn run(self: *Self) void {
     if (self.ast.root) |root| {
         switch (root.*) {
             .TopLevelScope => |lst| {
-                const reg = self.temp();
-
-                const inst = self.code.append(.{ .namespace_decl = .{ .dest = reg, .len = 0 } });
-
-                const start = self.code.len();
-
-                for (lst.items) |n| self.emit_statement(n);
-
-                self.code.get(inst).namespace_decl.len = self.code.len() - start;
-
+                for (lst.items) |n| self.emit_global_statement(n);
                 self.code.registers_count = self.register_count;
             },
             else => unreachable,
@@ -419,44 +506,8 @@ pub fn print(
     self: *Self,
 ) !void {
     const writer = std.io.getStdOut().writer();
-
-    try writer.print("len: {d}\n", .{self.code.len()});
     try self.code.print(writer);
 }
-
-pub const Scope = struct {
-    parent: ?Index = null,
-    depth: usize,
-
-    children: std.ArrayList(Index),
-    symbols: std.StringHashMap(usize),
-
-    pub const Index = enum(usize) { _ };
-
-    pub fn make(allocator: Allocator, depth: usize) Scope {
-        return Scope{
-            .parent = null,
-            .depth = depth,
-            .children = .init(allocator),
-            .symbols = .init(allocator),
-        };
-    }
-
-    pub fn makeWithParent(allocator: Allocator, depth: usize, parent: Index) Scope {
-        return Scope{
-            .parent = parent,
-            .depth = depth,
-            .children = .init(allocator),
-            .symbols = .init(allocator),
-        };
-    }
-
-    pub fn deinit(this: *Scope) void {
-        this.parent = null;
-        this.children.deinit();
-        this.symbols.deinit();
-    }
-};
 
 pub const Scopes = struct {
     stack: std.ArrayList(Local),
@@ -464,8 +515,16 @@ pub const Scopes = struct {
 
     pub const Local = struct {
         name: []const u8,
-        mapping: UIR.Variable,
+        ref: UIR.Ref,
+        mode: Mode,
         depth: usize,
+
+        pub const Mode = enum {
+            Local,
+            Decl,
+            Arg,
+            Field,
+        };
     };
 
     pub fn make(allocator: Allocator) Scopes {
@@ -478,27 +537,28 @@ pub const Scopes = struct {
         scopes.stack.deinit();
     }
 
-    pub fn get(scopes: *Scopes, name: []const u8) ?UIR.Variable {
+    pub fn get(scopes: *Scopes, name: []const u8) ?Local {
         const len = scopes.stack.items.len;
         if (len == 0) return null;
 
-        var i = len - 1;
+        var i: i32 = @intCast(len - 1);
 
         while (i >= 0) : (i -= 1) {
-            const local = scopes.stack.items[i];
+            const local = scopes.stack.items[@intCast(i)];
 
             if (std.mem.eql(u8, name, local.name)) {
-                return local.mapping;
+                return local;
             }
         }
 
         return null;
     }
 
-    pub fn add(scopes: *Scopes, name: []const u8, mapping: UIR.Variable) void {
+    pub fn add(scopes: *Scopes, name: []const u8, ref: UIR.Ref, mode: Local.Mode) void {
         scopes.stack.append(.{
             .name = name,
-            .mapping = mapping,
+            .ref = ref,
+            .mode = mode,
             .depth = scopes.depth,
         }) catch unreachable;
     }

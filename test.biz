@@ -1,3 +1,5 @@
+const x = i32;
+
 fn Vec2(T: type) type {
    return struct {
           x: T;
@@ -21,71 +23,3 @@ fn main() void {
    const name = "james";
    const age = double(9);
 };
-
-/*
-0 = fn {
-    args = [
-        "n" = cfg {
-        bb0:
-          %0 = load "i32";
-           return %0;
-        }
-    ]
-    return = cfg {
-    bb0:
-       %0 = load "i32";
-       return %0;
-    }
-    body = cfg {
-    bb0:
-        %0 = load_arg "n";
-        %1 = int(2);
-        %2 = %0 < %1;
-        if %2 then goto bb1 else goto bb2;
-    bb1:
-        %3 = int(1);
-        goto bb3 [%3];
-    bb2:
-        %4 = load_arg "n";
-        %5 = load_arg "n";
-        %6 = int(1);
-        %7 = %5 - %6;
-        %8 = load "factorial";
-        %9 = call(%8, [%7]);
-        %10 = %4 * %9;
-        goto bb3 [%10];
-    bb3 (arg):
-        return arg;
-    }
-}
-
-"factorial" = cfg {
-bb0:
-    %0 = fn_ref(0);
-    return %0;
-}
-
-
-
-
-
-
-
-print(3 * 25);
-
-%0 = int(3);
-%1 = int(25);
-%2 = %0 * %1;
-%3 = load_var("print");
-%4 = call %3 1 %2;
-
-int :: %0 3;
-int :: %1 25;
-mul :: %2 %0 %1;
-load_var :: %3 "print";
-call :: %4 %3 1 %2;
-
-opcode : u8
-
-
-*/

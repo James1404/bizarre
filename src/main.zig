@@ -45,11 +45,6 @@ pub fn main() !void {
     uirgen.run();
 
     try uirgen.print();
-
-    var sema = Sema.make(allocator, uirgen.code);
-    defer sema.deinit();
-
-    sema.run();
 }
 
 test {
