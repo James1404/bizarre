@@ -9,7 +9,6 @@ ast: AST,
 
 code: UIR,
 scopes: Scopes,
-register_count: u32 = 0,
 
 const Self = @This();
 
@@ -27,20 +26,79 @@ pub fn deinit(self: *Self) void {
     self.scopes.deinit();
 }
 
-fn register(
+fn register_local(
     self: *Self,
     chunk: *UIR.Chunk,
     ident: []const u8,
-    mode: Scopes.Local.Mode,
 ) UIR.Ref {
     const reg = chunk.reg();
-    self.scopes.add(ident, reg, mode);
+    _ = self.scopes.add(ident, .{ .ref = reg });
     return reg;
 }
 
-fn get_variable(self: *Self, ident: []const u8) UIR.Ref {
+fn register_decl(
+    self: *Self,
+    ident: []const u8,
+    index: UIR.Decl.Index,
+) void {
+    _ = self.scopes.add(ident, .{ .decl = index });
+}
+
+fn get_local(self: *Self, ident: []const u8) UIR.Ref {
     if (self.scopes.get(ident)) |local| {
-        return local.ref;
+        switch (local.value) {
+            .ref => |ref| return ref,
+            else => {},
+        }
+    }
+
+    std.log.err("Variable \"{s}\" is not defined", .{ident});
+    unreachable;
+}
+
+fn load_variable(
+    self: *Self,
+    chunk: *UIR.Chunk,
+    ident: []const u8,
+    out: UIR.Ref,
+) void {
+    if (self.scopes.get(ident)) |variable| {
+        switch (variable.value) {
+            .ref => |ref| _ = chunk.append(.{ .load = .{
+                .dest = out,
+                .ref = ref,
+            } }),
+            .decl => |decl| _ = chunk.append(.{ .load_decl = .{
+                .dest = out,
+                .index = decl,
+            } }),
+        }
+        return;
+    }
+
+    std.log.err("Variable \"{s}\" is not defined", .{ident});
+    unreachable;
+}
+
+fn set_variable(
+    self: *Self,
+    chunk: *UIR.Chunk,
+    ident: []const u8,
+    value: UIR.Ref,
+) void {
+    if (self.scopes.get(ident)) |variable| {
+        switch (variable.value) {
+            .ref => |ref| _ = chunk.append(.{ .store = .{
+                .ref = ref,
+                .value = value,
+            } }),
+            .decl => |decl| _ = chunk.append(.{ .store_decl = .{
+                .index = decl,
+                .value = value,
+            } }),
+        }
+
+        return;
     }
 
     std.log.err("Variable \"{s}\" is not defined", .{ident});
@@ -103,7 +161,7 @@ fn emit_as_comptime_block(self: *Self, chunk: *UIR.Chunk, node: AST.NodeRef) UIR
 fn emit_statement(self: *Self, chunk: *UIR.Chunk, node: AST.NodeRef) void {
     switch (node.*) {
         .ConstDecl => |n| {
-            const ident = self.register(chunk, getIdent(n.ident), .Local);
+            const ident = self.register_local(chunk, getIdent(n.ident));
 
             const value = self.emit_expr(chunk, n.value);
             const @"type" = if (n.type) |ty|
@@ -118,7 +176,7 @@ fn emit_statement(self: *Self, chunk: *UIR.Chunk, node: AST.NodeRef) void {
             } });
         },
         .VarDecl => |n| {
-            const ident = self.register(chunk, getIdent(n.ident), .Local);
+            const ident = self.register_local(chunk, getIdent(n.ident));
 
             const value = self.emit_expr(chunk, n.value);
             const @"type" = if (n.type) |ty|
@@ -133,13 +191,8 @@ fn emit_statement(self: *Self, chunk: *UIR.Chunk, node: AST.NodeRef) void {
             } });
         },
         .Assignment => |n| {
-            const reg = self.get_variable(getIdent(n.ident));
             const value = self.emit_expr(chunk, n.value);
-
-            _ = chunk.append(.{ .store = .{
-                .ref = reg,
-                .value = value,
-            } });
+            self.set_variable(chunk, getIdent(n.ident), value);
         },
 
         .Return => |n| {
@@ -196,14 +249,22 @@ fn emit_global_statement(self: *Self, node: AST.NodeRef) void {
         .ConstDecl => |n| {
             var chunk = UIR.Chunk.make(self.allocator);
 
-            _ = self.register(&chunk, getIdent(n.ident), .Local);
-
-            const mode: UIR.Decl.Mode = switch (n.value.*) {
-                .FnDecl => mode: {
+            switch (n.value.*) {
+                .FnDecl => {
+                    const decl = self.code.add_decl(.{
+                        .chunk = chunk,
+                        .mode = .Fn,
+                    });
+                    self.register_decl(getIdent(n.ident), decl);
                     self.emit_fn_decl(&chunk, n.value);
-                    break :mode .Fn;
+
+                    self.code.get_decl(decl).chunk = chunk;
+
+                    if (std.mem.eql(u8, getIdent(n.ident), "main")) {
+                        self.code.entry_point = decl;
+                    }
                 },
-                else => mode: {
+                else => {
                     const value = self.emit_expr(&chunk, n.value);
 
                     const @"type" = if (n.type) |ty|
@@ -219,23 +280,24 @@ fn emit_global_statement(self: *Self, node: AST.NodeRef) void {
                     } });
                     _ = chunk.append(.{ .@"return" = .{ .value = ret } });
 
-                    break :mode .Const;
+                    const decl = self.code.add_decl(.{ .chunk = chunk, .mode = .Const });
+                    self.register_decl(getIdent(n.ident), decl);
                 },
-            };
-
-            _ = self.code.add_decl(.{ .chunk = chunk, .mode = mode });
+            }
         },
         .VarDecl => |n| {
             var chunk = UIR.Chunk.make(self.allocator);
 
-            _ = self.register(&chunk, getIdent(n.ident), .Local);
-
-            const mode: UIR.Decl.Mode = switch (n.value.*) {
-                .FnDecl => mode: {
+            switch (n.value.*) {
+                .FnDecl => {
+                    const decl = self.code.add_decl(.{
+                        .chunk = chunk,
+                        .mode = .Fn,
+                    });
+                    self.register_decl(getIdent(n.ident), decl);
                     self.emit_fn_decl(&chunk, n.value);
-                    break :mode .Fn;
                 },
-                else => mode: {
+                else => {
                     const value = self.emit_expr(&chunk, n.value);
 
                     const @"type" = if (n.type) |ty|
@@ -251,11 +313,10 @@ fn emit_global_statement(self: *Self, node: AST.NodeRef) void {
                     } });
                     _ = chunk.append(.{ .@"return" = .{ .value = ret } });
 
-                    break :mode .Var;
+                    const decl = self.code.add_decl(.{ .chunk = chunk, .mode = .Var });
+                    self.register_decl(getIdent(n.ident), decl);
                 },
-            };
-
-            _ = self.code.add_decl(.{ .chunk = chunk, .mode = mode });
+            }
         },
         else => std.debug.panic(
             "Invalid Toplevel statement: {s}",
@@ -286,7 +347,7 @@ fn emit_fn_decl(
         const param_ty = self.emit_expr(chunk, param.Paramater.type);
 
         const ident = getIdent(param.Paramater.ident);
-        const param_reg = self.register(chunk, ident, .Arg);
+        const param_reg = self.register_local(chunk, ident);
         _ = chunk.append(.{ .typed_value = .{
             .dest = param_reg,
             .value = arg_reg,
@@ -360,8 +421,7 @@ fn emit_expr(
                     .builtin = builtin,
                 } });
             } else {
-                const ref = self.get_variable(v.text);
-                _ = chunk.append(.{ .load = .{ .dest = reg, .ref = ref } });
+                self.load_variable(chunk, v.text, reg);
             }
 
             break :reg reg;
@@ -490,12 +550,13 @@ fn emit_expr(
     };
 }
 
+pub fn global_pass(_: *Self) void {}
+
 pub fn run(self: *Self) void {
     if (self.ast.root) |root| {
         switch (root.*) {
             .TopLevelScope => |lst| {
                 for (lst.items) |n| self.emit_global_statement(n);
-                self.code.registers_count = self.register_count;
             },
             else => unreachable,
         }
@@ -510,21 +571,20 @@ pub fn print(
 }
 
 pub const Scopes = struct {
-    stack: std.ArrayList(Local),
+    stack: std.ArrayList(Binding),
     depth: usize = 0,
 
-    pub const Local = struct {
+    pub const Binding = struct {
         name: []const u8,
-        ref: UIR.Ref,
-        mode: Mode,
         depth: usize,
+        value: Value,
 
-        pub const Mode = enum {
-            Local,
-            Decl,
-            Arg,
-            Field,
+        pub const Value = union(enum) {
+            ref: UIR.Ref,
+            decl: UIR.Decl.Index,
         };
+
+        pub const Index = enum(usize) { _ };
     };
 
     pub fn make(allocator: Allocator) Scopes {
@@ -537,7 +597,7 @@ pub const Scopes = struct {
         scopes.stack.deinit();
     }
 
-    pub fn get(scopes: *Scopes, name: []const u8) ?Local {
+    pub fn get(scopes: *Scopes, name: []const u8) ?Binding {
         const len = scopes.stack.items.len;
         if (len == 0) return null;
 
@@ -554,13 +614,18 @@ pub const Scopes = struct {
         return null;
     }
 
-    pub fn add(scopes: *Scopes, name: []const u8, ref: UIR.Ref, mode: Local.Mode) void {
+    pub fn add(
+        scopes: *Scopes,
+        name: []const u8,
+        value: Binding.Value,
+    ) Binding.Index {
+        const index = scopes.stack.items.len;
         scopes.stack.append(.{
             .name = name,
-            .ref = ref,
-            .mode = mode,
+            .value = value,
             .depth = scopes.depth,
         }) catch unreachable;
+        return @enumFromInt(index);
     }
 
     pub fn down(scopes: *Scopes) void {

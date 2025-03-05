@@ -86,12 +86,18 @@ pub const Type = enum(u8) {
     f64,
 
     ptr,
+
+    @"struct": struct {
+        fields: std.ArrayList(Type),
+    },
 };
 
 pub const StructDecl = struct {};
 
-pub const Fn = struct {
-    return_type: Type,
-    args: std.ArrayList(Type),
-    body: Chunk,
+pub const Decl = union(enum) {
+    Fn: struct {
+        body: Chunk,
+        args: std.ArrayList(Type),
+        ret_ty: Type,
+    },
 };

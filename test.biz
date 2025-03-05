@@ -5,7 +5,7 @@ fn Vec2(T: type) type {
           x: T;
           y: T;
    };
-};
+}
 
 fn factorial(n: i32) i32 {
       return if n < 2 {
@@ -13,13 +13,18 @@ fn factorial(n: i32) i32 {
       } else {
              n * factorial(n - 1)
       };
-};
+}
+
+fn fac12() i32 {
+   return factorial(12);
+}
 
 fn double(x: i32) i32 {
    return x * 2;
-};
+}
 
 fn main() void {
    const name = "james";
+   name = "hello " + name;
    const age = double(9);
-};
+}

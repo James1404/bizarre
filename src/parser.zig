@@ -605,8 +605,30 @@ fn parse_toplevel_stmt(self: *Self) AST.NodeRef {
     const start = self.getCurrent();
 
     return switch (start.ty) {
-        .Const => self.parse_const(),
-        .Var => self.parse_var(),
+        .Const => node: {
+            const node = self.parse_const();
+
+            if (self.advanceIf(.Semicolon) == null) {
+                return self.alloc(.{ .Error = .{
+                    .msg = "Expect semicolon after const statement",
+                    .token = start,
+                } });
+            }
+
+            break :node node;
+        },
+        .Var => node: {
+            const node = self.parse_var();
+
+            if (self.advanceIf(.Semicolon) == null) {
+                return self.alloc(.{ .Error = .{
+                    .msg = "Expect semicolon after var statement",
+                    .token = start,
+                } });
+            }
+
+            break :node node;
+        },
         .Interface => self.parse_interface(),
         .Comptime => node: {
             self.advance();
@@ -661,18 +683,13 @@ fn parse_scope(self: *Self) AST.NodeRef {
 fn parse_toplevel(self: *Self) AST.NodeRef {
     var list = std.ArrayList(AST.NodeRef).init(self.allocator);
     while (!self.eof()) {
-        const start = self.getCurrent();
+        list.append(node: {
+            const node = self.parse_toplevel_stmt();
 
-        list.append(self.parse_toplevel_stmt()) catch |err| {
+            break :node node;
+        }) catch |err| {
             @panic(@errorName(err));
         };
-
-        if (self.advanceIf(.Semicolon) == null) {
-            return self.alloc(.{ .Error = .{
-                .msg = "Expect semicolon after each statement",
-                .token = start,
-            } });
-        }
     }
 
     return self.alloc(.{ .TopLevelScope = list });

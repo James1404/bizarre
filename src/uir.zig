@@ -3,8 +3,8 @@ const Allocator = std.mem.Allocator;
 
 allocator: Allocator,
 declarations: std.ArrayList(Decl),
+entry_point: ?Decl.Index = null,
 constants: Constants,
-registers_count: usize = 0,
 
 const Self = @This();
 
@@ -40,6 +40,10 @@ pub fn get_decl(self: *Self, index: Decl.Index) *Decl {
 
 pub fn print(self: *Self, writer: anytype) !void {
     for (self.declarations.items, 0..) |*decl, idx| {
+        if (self.entry_point == @as(Decl.Index, @enumFromInt(idx))) {
+            try writer.print("main ", .{});
+        }
+
         try writer.print("{s} {d} {{\n", .{
             switch (decl.mode) {
                 .Const => "const",
@@ -48,6 +52,7 @@ pub fn print(self: *Self, writer: anytype) !void {
             },
             idx,
         });
+
         try decl.chunk.print(self, writer, 1);
         try writer.print("}}\n\n", .{});
     }
@@ -326,7 +331,12 @@ pub const Chunk = struct {
         return @enumFromInt(idx);
     }
 
-    pub fn print(chunk: *Chunk, self: *Self, writer: anytype, indent: usize) !void {
+    pub fn print(
+        chunk: *Chunk,
+        self: *Self,
+        writer: anytype,
+        indent: usize,
+    ) !void {
         for (chunk.instructions.items) |inst| {
             for (0..indent) |_| try writer.print("\t", .{});
 
@@ -349,7 +359,7 @@ pub const Chunk = struct {
                 .not => |v| try writer.print("{s} = !{s}", .{ v.dest, v.value }),
 
                 .cast => |v| try writer.print("{s} = {s} as {s}", .{ v.dest, v.value, v.as }),
-                .typeof => |v| try writer.print("{s} = typeof {s}", .{ v.dest, v.value }),
+                .typeof => |v| try writer.print("{s} = typeof({s})", .{ v.dest, v.value }),
 
                 .load_constant => |v| {
                     const constant = self.constants.get(v.index);
@@ -465,4 +475,10 @@ pub const Decl = struct {
             try writer.print("Decl.{d}", .{@intFromEnum(self)});
         }
     };
+};
+
+const VariableDesc = struct {
+    name: []const u8,
+    line: usize,
+    loc: usize,
 };
