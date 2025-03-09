@@ -294,6 +294,45 @@ pub const Constants = struct {
     };
 };
 
+pub const Loc = enum(usize) {
+    _,
+};
+
+pub const Terminator = union(enum) {
+    const Branch = struct { pattern: Ref, loc: Loc };
+
+    goto: Loc,
+    @"if": struct { cond: Ref, true: Loc, false: Loc },
+    match: struct {
+        value: Ref,
+        branches: std.ArrayList(Branch),
+    },
+
+    @"return": struct { value: Ref },
+};
+
+pub const BasicBlock = struct {
+    instructions: std.ArrayList(Instruction),
+};
+
+pub const CFG = struct {
+    allocator: Allocator,
+    blocks: std.ArrayList(BasicBlock),
+    register_count: usize = 0,
+
+    pub fn append(graph: *CFG) Loc {
+        const idx = graph.blocks.items.len;
+        graph.blocks.append(.{
+            .instructions = .init(graph.allocator),
+        }) catch unreachable;
+        return @enumFromInt(idx);
+    }
+
+    pub fn get(graph: *CFG, loc: Loc) *BasicBlock {
+        return &graph.blocks.items[@intFromEnum(loc)];
+    }
+};
+
 pub const Chunk = struct {
     instructions: std.ArrayList(Instruction),
     register_count: usize = 0,

@@ -1,23 +1,26 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const UIR = @import("uir.zig");
+const TIR = @import("tir.zig");
 
 allocator: Allocator,
 call_stack: std.ArrayList(StackFrame),
 declarations: []?Value,
-code: UIR,
+uir: UIR,
+out: TIR,
 
 const Self = @This();
 
-pub fn make(allocator: Allocator, code: UIR) Self {
+pub fn make(allocator: Allocator, uir: UIR) Self {
     const self = Self{
         .allocator = allocator,
         .call_stack = .init(allocator),
         .declarations = allocator.alloc(
             ?Value,
-            code.declarations.items.len,
+            uir.declarations.items.len,
         ) catch unreachable,
-        .code = code,
+        .uir = uir,
+        .out = .make(allocator),
     };
 
     @memset(self.declarations, null);
@@ -28,14 +31,15 @@ pub fn make(allocator: Allocator, code: UIR) Self {
 pub fn deinit(self: *Self) void {
     self.call_stack.deinit();
     self.allocator.free(self.declarations);
+    self.out.deinit();
 }
 
 pub fn run(self: *Self) void {
-    if (self.code.entry_point) |entry| {
+    if (self.uir.entry_point) |entry| {
         self.push_frame(entry, null);
         self.eval();
     } else {
-        std.debug.panic("Cannot run program without entry point", .{});
+        std.debug.panic("Cannot compile program without entry point", .{});
     }
 }
 
@@ -44,7 +48,7 @@ pub fn push_frame(
     decl: UIR.Decl.Index,
     args: ?std.ArrayList(Value),
 ) void {
-    const reg_count = self.code.get_decl(decl).chunk.register_count;
+    const reg_count = self.uir.get_decl(decl).chunk.register_count;
     self.call_stack.append(.{
         .allocator = self.allocator,
         .decl = decl,
@@ -62,7 +66,7 @@ pub fn pop_frame(self: *Self) void {
 pub fn eval(self: *Self) void {
     while (self.call_stack.items.len > 0) {
         const frame = &self.call_stack.items[self.call_stack.items.len - 1];
-        const decl = self.code.get_decl(frame.decl);
+        const decl = self.uir.get_decl(frame.decl);
 
         const inst = decl.chunk.get(frame.ip);
         frame.ip += 1;
@@ -138,7 +142,7 @@ pub fn eval(self: *Self) void {
 
             .load_constant => |n| self.set_register(
                 n.dest,
-                switch (self.code.constants.get(n.index)) {
+                switch (self.uir.constants.get(n.index)) {
                     .int => |v| .{ .i32 = std.fmt.parseInt(i32, v, 10) catch unreachable },
                     .float => |v| .{ .f32 = std.fmt.parseFloat(f32, v) catch unreachable },
                     .bool => |v| .{ .bool = v },

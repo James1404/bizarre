@@ -2,9 +2,21 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 allocator: Allocator,
-functions: std.ArrayList(Fn),
+declarations: std.ArrayList(Decl),
+entry_point: ?Decl.Index = null,
 
 const Self = @This();
+
+pub fn make(allocator: Allocator) Self {
+    return Self{
+        .allocator = allocator,
+        .declarations = .init(allocator),
+    };
+}
+
+pub fn deinit(self: *Self) void {
+    self.declarations.deinit();
+}
 
 pub const Ref = enum(usize) {
     _,
@@ -56,16 +68,10 @@ pub const Instruction = union(enum) {
     load, // A = env[string[B..B + C]]
     store, // env[A] = B
 
-    push, // push(A)
-    pop, // A = pop()
-
-    call, // A = B(No. C args)
-
-    jump, // jump A
-    jump_if, // if A jump B
+    call: struct { @"fn": Decl.Index, args: std.ArrayList(Ref) },
 };
 
-pub const Type = enum(u8) {
+pub const Type = union(enum) {
     void,
     string,
     bool,
@@ -85,19 +91,127 @@ pub const Type = enum(u8) {
     f32,
     f64,
 
-    ptr,
+    ptr: *Type,
 
-    @"struct": struct {
-        fields: std.ArrayList(Type),
-    },
+    @"struct": struct { index: Decl.Index },
 };
 
-pub const StructDecl = struct {};
-
 pub const Decl = union(enum) {
-    Fn: struct {
+    Func: struct {
         body: Chunk,
         args: std.ArrayList(Type),
         ret_ty: Type,
     },
+    Struct: struct {
+        fields: std.ArrayList(Type),
+    },
+
+    pub const Index = enum(usize) {
+        _,
+
+        pub fn format(
+            self: @This(),
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            try writer.print("Decl.{d}", .{@intFromEnum(self)});
+        }
+    };
+};
+
+pub const Constants = struct {
+    list: std.ArrayList(Value),
+
+    pub fn make(allocator: Allocator) Constants {
+        return Constants{
+            .list = .init(allocator),
+        };
+    }
+
+    pub fn deinit(constants: *Constants) void {
+        constants.list.deinit();
+    }
+
+    pub fn append(constants: *Constants, value: Value) Value.Index {
+        const index = constants.list.items.len;
+        constants.list.append(value) catch unreachable;
+        return @enumFromInt(index);
+    }
+
+    pub fn get(constants: *Constants, index: Value.Index) Value {
+        return constants.list.items[@intFromEnum(index)];
+    }
+
+    pub const Value = union(enum) {
+        pub const Index = enum(u32) {
+            _,
+
+            pub fn format(
+                self: @This(),
+                comptime _: []const u8,
+                _: std.fmt.FormatOptions,
+                writer: anytype,
+            ) !void {
+                try writer.print("Const.%{d}", .{@intFromEnum(self)});
+            }
+        };
+
+        type: union(enum) {
+            void,
+            string,
+            bool,
+
+            i8,
+            i16,
+            i32,
+            i64,
+            isize,
+
+            u8,
+            u16,
+            u32,
+            u64,
+            usize,
+
+            f32,
+            f64,
+
+            ptr: Ref,
+            array: struct { len: usize, type: Ref },
+            slice: struct { type: Ref },
+
+            any,
+            type,
+        },
+
+        i8: i8,
+        i16: i16,
+        i32: i32,
+        i64: i64,
+        u8: u8,
+        u16: u16,
+        u32: u32,
+        u64: u64,
+
+        f32: f32,
+        f64: f64,
+
+        string: []const u8,
+        bool: bool,
+
+        pub fn format(
+            self: @This(),
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            switch (self) {
+                inline else => |v, tag| try writer.print(
+                    "{s}({s})",
+                    .{ @tagName(tag), v },
+                ),
+            }
+        }
+    };
 };
