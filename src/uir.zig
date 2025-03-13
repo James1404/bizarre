@@ -53,7 +53,13 @@ pub fn print(self: *Self, writer: anytype) !void {
             idx,
         });
 
-        try decl.chunk.print(self, writer, 1);
+        for (decl.cfg.blocks.items, 0..) |*bb, bbidx| {
+            try writer.print("\tblock {d} {{\n", .{bbidx});
+
+            try bb.print(self, writer, 3);
+
+            try writer.print("\t}}\n\n", .{});
+        }
         try writer.print("}}\n\n", .{});
     }
 }
@@ -106,52 +112,18 @@ pub const Instruction = union(enum) {
 
     typed_value: struct { dest: Ref, value: Ref, ty: Ref },
 
-    struct_decl: struct {
-        dest: Ref,
-        len: usize,
-    },
-    interface_decl: struct {
-        dest: Ref,
-        len: usize,
-    },
-    create_field: struct {
-        index: usize,
-        ty: Ref,
-    },
+    create_struct: struct { dest: Ref },
+    create_interface: struct { dest: Ref },
+    append_field: struct { decl: Ref, name: []const u8, ty: Ref },
 
-    array_index: struct {
-        dest: Ref,
-        array: Ref,
-        index: Ref,
-    },
-
-    field_access: struct {
-        dest: Ref,
-        value: Ref,
-        field: Ref,
-    },
+    array_index: struct { dest: Ref, array: Ref, index: Ref },
+    field_access: struct { dest: Ref, decl: Ref, name: []const u8 },
 
     set_argc: struct { len: usize },
     load_arg: struct { dest: Ref, arg: usize },
     set_return_type: struct { ty: Ref },
 
     call: struct { dest: Ref, @"fn": Ref, args: std.ArrayList(Ref) },
-
-    block: struct { dest: Ref, len: usize },
-    comptime_block: struct { dest: Ref, len: usize },
-
-    // control-flow
-    goto: struct { loc: usize },
-
-    loop: struct { len: usize },
-    repeat,
-    @"break",
-
-    if_stmt: struct { cond: Ref, true_len: usize, false_len: usize },
-    if_expr: struct { dest: Ref, cond: Ref, true_len: usize, false_len: usize },
-
-    @"return": struct { value: Ref },
-    return_implicit: struct { value: Ref },
 
     fn deinit(self: *@This()) void {
         switch (self.*) {
@@ -296,6 +268,15 @@ pub const Constants = struct {
 
 pub const Loc = enum(usize) {
     _,
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        try writer.print("BB.{d}", .{@intFromEnum(self)});
+    }
 };
 
 pub const Terminator = union(enum) {
@@ -309,74 +290,57 @@ pub const Terminator = union(enum) {
     },
 
     @"return": struct { value: Ref },
+    return_implicit: struct { value: Ref },
+
+    pub fn deinit(term: *Terminator) void {
+        switch (term.*) {
+            .match => |v| v.branches.deinit(),
+            else => {},
+        }
+    }
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (self.*) {
+            .goto => |v| try writer.print("goto {s}", .{v}),
+            .@"if" => |v| try writer.print(
+                "if {s} then {s} else {s}",
+                .{ v.cond, v.true, v.false },
+            ),
+            .match => {},
+            .@"return" => |v| try writer.print("return {s}", .{v.value}),
+            .return_implicit => |v| try writer.print("return_implicit {s}", .{v.value}),
+        }
+    }
 };
 
 pub const BasicBlock = struct {
     instructions: std.ArrayList(Instruction),
-};
+    terminator: ?Terminator = null,
+    @"comptime": bool = false,
 
-pub const CFG = struct {
-    allocator: Allocator,
-    blocks: std.ArrayList(BasicBlock),
-    register_count: usize = 0,
-
-    pub fn append(graph: *CFG) Loc {
-        const idx = graph.blocks.items.len;
-        graph.blocks.append(.{
-            .instructions = .init(graph.allocator),
-        }) catch unreachable;
-        return @enumFromInt(idx);
-    }
-
-    pub fn get(graph: *CFG, loc: Loc) *BasicBlock {
-        return &graph.blocks.items[@intFromEnum(loc)];
-    }
-};
-
-pub const Chunk = struct {
-    instructions: std.ArrayList(Instruction),
-    register_count: usize = 0,
-
-    pub fn make(allocator: Allocator) Chunk {
-        return Chunk{
-            .instructions = .init(allocator),
-        };
-    }
-
-    pub fn deinit(chunk: *Chunk) void {
-        for (chunk.instructions.items) |*inst| {
+    pub fn deinit(bb: *BasicBlock) void {
+        for (bb.instructions.items) |*inst| {
             inst.deinit();
         }
-        chunk.instructions.deinit();
+        bb.instructions.deinit();
     }
 
-    pub fn append(chunk: *Chunk, inst: Instruction) usize {
-        const idx = chunk.len();
-        chunk.instructions.append(inst) catch unreachable;
-        return idx;
-    }
-
-    pub fn get(chunk: *Chunk, idx: usize) *Instruction {
-        return &chunk.instructions.items[idx];
-    }
-
-    pub fn len(chunk: Chunk) usize {
-        return chunk.instructions.items.len;
-    }
-
-    pub fn reg(chunk: *Chunk) Ref {
-        const idx = chunk.register_count;
-        chunk.register_count += 1;
-        return @enumFromInt(idx);
+    pub fn append(bb: *BasicBlock, inst: Instruction) void {
+        bb.instructions.append(inst) catch unreachable;
     }
 
     pub fn print(
-        chunk: *Chunk,
+        bb: *BasicBlock,
         self: *Self,
         writer: anytype,
         indent: usize,
     ) !void {
-        for (chunk.instructions.items) |inst| {
+        for (bb.instructions.items) |inst| {
             for (0..indent) |_| try writer.print("\t", .{});
 
             switch (inst) {
@@ -433,17 +397,17 @@ pub const Chunk = struct {
                 .ref => |v| try writer.print("{s} = {s}.&", .{ v.dest, v.value }),
                 .deref => |v| try writer.print("{s} = {s}.*", .{ v.dest, v.value }),
 
-                .struct_decl => |v| try writer.print(
-                    "{s} = struct_decl(len: {d})",
-                    .{ v.dest, v.len },
+                .create_struct => |v| try writer.print(
+                    "{s} = create_struct()",
+                    .{v.dest},
                 ),
-                .interface_decl => |v| try writer.print(
-                    "{s} = interface_decl(len: {d})",
-                    .{ v.dest, v.len },
+                .create_interface => |v| try writer.print(
+                    "{s} = create_interface()",
+                    .{v.dest},
                 ),
-                .create_field => |v| try writer.print(
-                    "field {d} {s}",
-                    .{ v.index, v.ty },
+                .append_field => |v| try writer.print(
+                    "struct {s} append_field {s} {s}",
+                    .{ v.decl, v.name, v.ty },
                 ),
 
                 .array_index => |v| try writer.print(
@@ -451,11 +415,11 @@ pub const Chunk = struct {
                     .{ v.dest, v.array, v.index },
                 ),
                 .field_access => |v| try writer.print(
-                    "{s} = {s}.{s}",
+                    "{s} = {s}.\"{s}\"",
                     .{
                         v.dest,
-                        v.value,
-                        v.field,
+                        v.decl,
+                        v.name,
                     },
                 ),
 
@@ -464,27 +428,6 @@ pub const Chunk = struct {
                 .set_return_type => |v| try writer.print("set_return_type({s})", .{v.ty}),
 
                 .call => |v| try writer.print("{s} = call({s}, {any})", .{ v.dest, v.@"fn", v.args.items }),
-
-                .block => |v| try writer.print("{s} = block(len: {d})", .{ v.dest, v.len }),
-                .comptime_block => |v| try writer.print("{s} = comptime_block(len: {d})", .{ v.dest, v.len }),
-
-                .goto => |v| try writer.print("goto {d}", .{v.loc}),
-
-                .loop => |v| try writer.print("loop(len: {d})", .{v.len}),
-                .repeat => try writer.print("repeat", .{}),
-                .@"break" => try writer.print("break", .{}),
-
-                .if_expr => |v| try writer.print(
-                    "{s} = if({s}, true_len: {d}, false_len: {d})",
-                    .{ v.dest, v.cond, v.true_len, v.false_len },
-                ),
-                .if_stmt => |v| try writer.print(
-                    "if({s}, true_len: {d}, false_len: {d})",
-                    .{ v.cond, v.true_len, v.false_len },
-                ),
-
-                .@"return" => |v| try writer.print("return {s}", .{v.value}),
-                .return_implicit => |v| try writer.print("return_implicit {s}", .{v.value}),
             }
 
             try writer.print(";\n", .{});
@@ -492,14 +435,46 @@ pub const Chunk = struct {
     }
 };
 
+pub const CFG = struct {
+    allocator: Allocator,
+    blocks: std.ArrayList(BasicBlock),
+
+    pub fn make(allocator: Allocator) CFG {
+        return CFG{
+            .allocator = allocator,
+            .blocks = .init(allocator),
+        };
+    }
+
+    pub fn deinit(graph: *CFG) void {
+        for (graph.blocks.items) |*bb| {
+            bb.deinit();
+        }
+        graph.blocks.deinit();
+    }
+
+    pub fn append(graph: *CFG, @"comptime": bool) Loc {
+        const idx = graph.blocks.items.len;
+        graph.blocks.append(.{
+            .instructions = .init(graph.allocator),
+            .@"comptime" = @"comptime",
+        }) catch unreachable;
+        return @enumFromInt(idx);
+    }
+
+    pub fn get(graph: *CFG, loc: Loc) *BasicBlock {
+        return &graph.blocks.items[@intFromEnum(loc)];
+    }
+};
+
 pub const Decl = struct {
-    chunk: Chunk,
+    cfg: CFG,
     mode: Mode,
 
     pub const Mode = enum { Var, Const, Fn };
 
     pub fn deinit(decl: *Decl) void {
-        decl.chunk.deinit();
+        decl.cfg.deinit();
     }
 
     pub const Index = enum(usize) {

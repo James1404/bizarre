@@ -28,10 +28,10 @@ pub fn deinit(self: *Self) void {
 
 fn register_local(
     self: *Self,
-    chunk: *UIR.Chunk,
+    cfg: *CFGGen,
     ident: []const u8,
 ) UIR.Ref {
-    const reg = chunk.reg();
+    const reg = cfg.reg();
     _ = self.scopes.add(ident, .{ .ref = reg });
     return reg;
 }
@@ -58,17 +58,17 @@ fn get_local(self: *Self, ident: []const u8) UIR.Ref {
 
 fn load_variable(
     self: *Self,
-    chunk: *UIR.Chunk,
+    cfg: *CFGGen,
     ident: []const u8,
     out: UIR.Ref,
 ) void {
     if (self.scopes.get(ident)) |variable| {
         switch (variable.value) {
-            .ref => |ref| _ = chunk.append(.{ .load = .{
+            .ref => |ref| cfg.append(.{ .load = .{
                 .dest = out,
                 .ref = ref,
             } }),
-            .decl => |decl| _ = chunk.append(.{ .load_decl = .{
+            .decl => |decl| cfg.append(.{ .load_decl = .{
                 .dest = out,
                 .index = decl,
             } }),
@@ -82,17 +82,17 @@ fn load_variable(
 
 fn set_variable(
     self: *Self,
-    chunk: *UIR.Chunk,
+    cfg: *CFGGen,
     ident: []const u8,
     value: UIR.Ref,
 ) void {
     if (self.scopes.get(ident)) |variable| {
         switch (variable.value) {
-            .ref => |ref| _ = chunk.append(.{ .store = .{
+            .ref => |ref| cfg.append(.{ .store = .{
                 .ref = ref,
                 .value = value,
             } }),
-            .decl => |decl| _ = chunk.append(.{ .store_decl = .{
+            .decl => |decl| cfg.append(.{ .store_decl = .{
                 .index = decl,
                 .value = value,
             } }),
@@ -112,11 +112,15 @@ fn getIdent(node: AST.NodeRef) []const u8 {
     };
 }
 
-fn emit_as_constant(self: *Self, chunk: *UIR.Chunk, value: UIR.Constants.Value) UIR.Ref {
-    const reg = chunk.reg();
+fn emit_as_constant(
+    self: *Self,
+    cfg: *CFGGen,
+    value: UIR.Constants.Value,
+) UIR.Ref {
+    const reg = cfg.reg();
     const index = self.code.constants.append(value);
 
-    _ = chunk.append(.{ .load_constant = .{
+    cfg.append(.{ .load_constant = .{
         .dest = reg,
         .index = index,
     } });
@@ -124,196 +128,217 @@ fn emit_as_constant(self: *Self, chunk: *UIR.Chunk, value: UIR.Constants.Value) 
     return reg;
 }
 
-fn infer(_: *Self, chunk: *UIR.Chunk, ref: UIR.Ref) UIR.Ref {
-    const reg = chunk.reg();
-    _ = chunk.append(.{ .typeof = .{ .dest = reg, .value = ref } });
+fn infer(_: *Self, cfg: *CFGGen, ref: UIR.Ref) UIR.Ref {
+    const reg = cfg.reg();
+    cfg.append(.{ .typeof = .{ .dest = reg, .value = ref } });
     return reg;
 }
 
-fn emit_as_block(self: *Self, chunk: *UIR.Chunk, node: AST.NodeRef) UIR.Ref {
-    const reg = chunk.reg();
+fn emit_as_block(self: *Self, cfg: *CFGGen, node: AST.NodeRef) UIR.Ref {
+    const reg = cfg.reg();
 
-    const inst = chunk.append(.{ .block = .{ .dest = reg, .len = 0 } });
+    const blockLoc = cfg.branch(false);
 
-    const start = chunk.len();
+    cfg.set_terminator(.{ .goto = blockLoc });
+    cfg.set_current(blockLoc);
 
-    _ = self.emit_expr(chunk, node);
+    _ = self.emit_expr(cfg, node);
 
-    chunk.get(inst).comptime_block.len = chunk.len() - start;
-
-    return reg;
-}
-
-fn emit_as_comptime_block(self: *Self, chunk: *UIR.Chunk, node: AST.NodeRef) UIR.Ref {
-    const reg = chunk.reg();
-
-    const inst = chunk.append(.{ .comptime_block = .{ .dest = reg, .len = 0 } });
-
-    const start = chunk.len();
-
-    _ = self.emit_expr(chunk, node);
-
-    chunk.get(inst).comptime_block.len = chunk.len() - start;
+    const afterLoc = cfg.branch(false);
+    cfg.set_terminator(.{ .goto = afterLoc });
+    cfg.set_current(afterLoc);
 
     return reg;
 }
 
-fn emit_statement(self: *Self, chunk: *UIR.Chunk, node: AST.NodeRef) void {
+fn emit_as_comptime_block(self: *Self, cfg: *CFGGen, node: AST.NodeRef) UIR.Ref {
+    const reg = cfg.reg();
+
+    const blockLoc = cfg.branch(true);
+
+    cfg.set_terminator(.{ .goto = blockLoc });
+    cfg.set_current(blockLoc);
+
+    _ = self.emit_expr(cfg, node);
+
+    const afterLoc = cfg.branch(true);
+    cfg.set_terminator(.{ .goto = afterLoc });
+    cfg.set_current(afterLoc);
+
+    return reg;
+}
+
+fn emit_statement(self: *Self, cfg: *CFGGen, node: AST.NodeRef) void {
     switch (node.*) {
         .ConstDecl => |n| {
-            const ident = self.register_local(chunk, getIdent(n.ident));
+            const ident = self.register_local(cfg, getIdent(n.ident));
 
-            const value = self.emit_expr(chunk, n.value);
+            const value = self.emit_expr(cfg, n.value);
             const @"type" = if (n.type) |ty|
-                self.emit_expr(chunk, ty)
+                self.emit_expr(cfg, ty)
             else
-                self.infer(chunk, value);
+                self.infer(cfg, value);
 
-            _ = chunk.append(.{ .typed_value = .{
+            cfg.append(.{ .typed_value = .{
                 .dest = ident,
                 .value = value,
                 .ty = @"type",
             } });
         },
         .VarDecl => |n| {
-            const ident = self.register_local(chunk, getIdent(n.ident));
+            const ident = self.register_local(cfg, getIdent(n.ident));
 
-            const value = self.emit_expr(chunk, n.value);
+            const value = self.emit_expr(cfg, n.value);
             const @"type" = if (n.type) |ty|
-                self.emit_expr(chunk, ty)
+                self.emit_expr(cfg, ty)
             else
-                self.infer(chunk, value);
+                self.infer(cfg, value);
 
-            _ = chunk.append(.{ .typed_value = .{
+            cfg.append(.{ .typed_value = .{
                 .dest = ident,
                 .value = value,
                 .ty = @"type",
             } });
         },
         .Assignment => |n| {
-            const value = self.emit_expr(chunk, n.value);
-            self.set_variable(chunk, getIdent(n.ident), value);
+            const value = self.emit_expr(cfg, n.value);
+            self.set_variable(cfg, getIdent(n.ident), value);
         },
 
         .Return => |n| {
-            _ = chunk.append(.{ .@"return" = .{
-                .value = self.emit_expr(chunk, n),
+            cfg.set_terminator(.{ .@"return" = .{
+                .value = self.emit_expr(cfg, n),
             } });
         },
         .ImplicitReturn => |n| {
-            _ = chunk.append(.{ .return_implicit = .{
-                .value = self.emit_expr(chunk, n),
+            cfg.append(.{ .store = .{
+                .ref = cfg.pop_return_stack(),
+                .value = self.emit_expr(cfg, n),
             } });
         },
+        .Scope => |lst| {
+            self.scopes.down();
 
+            for (lst.items) |n| self.emit_statement(cfg, n);
+
+            self.scopes.up();
+        },
         .If => |n| {
-            const cond = self.emit_expr(chunk, n.cond);
+            const cond = self.emit_expr(cfg, n.cond);
 
-            const inst = chunk.append(.{ .if_stmt = .{
+            const true_branch = cfg.branch(false);
+            const false_branch = cfg.branch(false);
+            const after_branch = cfg.branch(false);
+            cfg.set_terminator(.{ .@"if" = .{
                 .cond = cond,
-                .true_len = 0,
-                .false_len = 0,
+                .true = true_branch,
+                .false = false_branch,
             } });
 
             {
-                const start = chunk.len();
+                cfg.set_current(true_branch);
                 self.scopes.down();
 
                 for (n.true.Scope.items) |item| {
-                    self.emit_statement(chunk, item);
+                    self.emit_statement(cfg, item);
                 }
 
+                cfg.set_terminator(.{ .goto = after_branch });
                 self.scopes.up();
-                chunk.get(inst).if_expr.true_len = chunk.len() - start;
             }
 
             {
-                const start = chunk.len();
+                cfg.set_current(false_branch);
                 self.scopes.down();
 
-                for (n.false.Scope.items) |item| {
-                    self.emit_statement(chunk, item);
+                for (n.true.Scope.items) |item| {
+                    self.emit_statement(cfg, item);
                 }
 
+                cfg.set_terminator(.{ .goto = after_branch });
                 self.scopes.up();
-                chunk.get(inst).if_expr.false_len = chunk.len() - start;
             }
         },
 
-        else => _ = self.emit_expr(chunk, node),
+        else => _ = self.emit_expr(cfg, node),
     }
 }
 
 fn emit_global_statement(self: *Self, node: AST.NodeRef) void {
+    var cfg = CFGGen.make(self.allocator);
+
     switch (node.*) {
         .ConstDecl => |n| {
-            var chunk = UIR.Chunk.make(self.allocator);
-
             switch (n.value.*) {
                 .FnDecl => {
                     const decl = self.code.add_decl(.{
-                        .chunk = chunk,
+                        .cfg = undefined,
                         .mode = .Fn,
                     });
                     self.register_decl(getIdent(n.ident), decl);
-                    self.emit_fn_decl(&chunk, n.value);
+                    self.emit_fn_decl(&cfg, n.value);
 
-                    self.code.get_decl(decl).chunk = chunk;
+                    self.code.get_decl(decl).cfg = cfg.graph;
 
                     if (std.mem.eql(u8, getIdent(n.ident), "main")) {
                         self.code.entry_point = decl;
                     }
                 },
                 else => {
-                    const value = self.emit_expr(&chunk, n.value);
+                    const value = self.emit_expr(&cfg, n.value);
 
                     const @"type" = if (n.type) |ty|
-                        self.emit_expr(&chunk, ty)
+                        self.emit_expr(&cfg, ty)
                     else
-                        self.infer(&chunk, value);
+                        self.infer(&cfg, value);
 
-                    const ret = chunk.reg();
-                    _ = chunk.append(.{ .typed_value = .{
+                    const ret = cfg.reg();
+                    cfg.append(.{ .typed_value = .{
                         .dest = ret,
                         .value = value,
                         .ty = @"type",
                     } });
-                    _ = chunk.append(.{ .@"return" = .{ .value = ret } });
 
-                    const decl = self.code.add_decl(.{ .chunk = chunk, .mode = .Const });
+                    cfg.set_terminator(.{ .@"return" = .{ .value = ret } });
+
+                    const decl = self.code.add_decl(.{
+                        .cfg = cfg.graph,
+                        .mode = .Const,
+                    });
                     self.register_decl(getIdent(n.ident), decl);
                 },
             }
         },
         .VarDecl => |n| {
-            var chunk = UIR.Chunk.make(self.allocator);
-
             switch (n.value.*) {
                 .FnDecl => {
                     const decl = self.code.add_decl(.{
-                        .chunk = chunk,
+                        .cfg = cfg.graph,
                         .mode = .Fn,
                     });
                     self.register_decl(getIdent(n.ident), decl);
-                    self.emit_fn_decl(&chunk, n.value);
+                    self.emit_fn_decl(&cfg, n.value);
                 },
                 else => {
-                    const value = self.emit_expr(&chunk, n.value);
+                    const value = self.emit_expr(&cfg, n.value);
 
                     const @"type" = if (n.type) |ty|
-                        self.emit_expr(&chunk, ty)
+                        self.emit_expr(&cfg, ty)
                     else
-                        self.infer(&chunk, value);
+                        self.infer(&cfg, value);
 
-                    const ret = chunk.reg();
-                    _ = chunk.append(.{ .typed_value = .{
+                    const ret = cfg.reg();
+                    cfg.append(.{ .typed_value = .{
                         .dest = ret,
                         .value = value,
                         .ty = @"type",
                     } });
-                    _ = chunk.append(.{ .@"return" = .{ .value = ret } });
+                    cfg.set_terminator(.{ .@"return" = .{ .value = ret } });
 
-                    const decl = self.code.add_decl(.{ .chunk = chunk, .mode = .Var });
+                    const decl = self.code.add_decl(.{
+                        .cfg = cfg.graph,
+                        .mode = .Var,
+                    });
                     self.register_decl(getIdent(n.ident), decl);
                 },
             }
@@ -327,41 +352,41 @@ fn emit_global_statement(self: *Self, node: AST.NodeRef) void {
 
 fn emit_fn_decl(
     self: *Self,
-    chunk: *UIR.Chunk,
+    cfg: *CFGGen,
     node: AST.NodeRef,
 ) void {
     const n = node.FnDecl;
     self.scopes.down();
 
-    _ = chunk.append(.{ .set_argc = .{
+    cfg.append(.{ .set_argc = .{
         .len = n.params.ParamaterList.items.len,
     } });
 
     for (n.params.ParamaterList.items, 0..) |param, idx| {
-        const arg_reg = chunk.reg();
-        _ = chunk.append(.{ .load_arg = .{
+        const arg_reg = cfg.reg();
+        cfg.append(.{ .load_arg = .{
             .dest = arg_reg,
             .arg = idx,
         } });
 
-        const param_ty = self.emit_expr(chunk, param.Paramater.type);
+        const param_ty = self.emit_expr(cfg, param.Paramater.type);
 
         const ident = getIdent(param.Paramater.ident);
-        const param_reg = self.register_local(chunk, ident);
-        _ = chunk.append(.{ .typed_value = .{
+        const param_reg = self.register_local(cfg, ident);
+        cfg.append(.{ .typed_value = .{
             .dest = param_reg,
             .value = arg_reg,
             .ty = param_ty,
         } });
     }
 
-    const return_type = self.emit_expr(chunk, n.ret);
-    _ = chunk.append(.{ .set_return_type = .{ .ty = return_type } });
+    const return_type = self.emit_expr(cfg, n.ret);
+    cfg.append(.{ .set_return_type = .{ .ty = return_type } });
 
     switch (n.block.*) {
         .Scope => |lst| {
             for (lst.items) |item| {
-                self.emit_statement(chunk, item);
+                self.emit_statement(cfg, item);
             }
         },
         else => unreachable,
@@ -372,71 +397,71 @@ fn emit_fn_decl(
 
 fn emit_expr(
     self: *Self,
-    chunk: *UIR.Chunk,
+    cfg: *CFGGen,
     node: AST.NodeRef,
 ) UIR.Ref {
     return switch (node.*) {
         .Unary => |n| reg: {
-            const value = self.emit_expr(chunk, n.node);
-            const reg = chunk.reg();
+            const value = self.emit_expr(cfg, n.node);
+            const reg = cfg.reg();
             _ = switch (n.Op.ty) {
-                .Minus => chunk.append(.{ .negative = .{ .dest = reg, .value = value } }),
+                .Minus => cfg.append(.{ .negative = .{ .dest = reg, .value = value } }),
                 else => unreachable,
             };
             break :reg reg;
         },
         .Binary => |n| reg: {
-            const lhs = self.emit_expr(chunk, n.lhs);
-            const rhs = self.emit_expr(chunk, n.rhs);
-            const reg = chunk.reg();
+            const lhs = self.emit_expr(cfg, n.lhs);
+            const rhs = self.emit_expr(cfg, n.rhs);
+            const reg = cfg.reg();
 
             _ = switch (n.Op.ty) {
-                .Plus => chunk.append(.{ .add = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .Minus => chunk.append(.{ .sub = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .Asterix => chunk.append(.{ .mul = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .Slash => chunk.append(.{ .div = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .Plus => cfg.append(.{ .add = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .Minus => cfg.append(.{ .sub = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .Asterix => cfg.append(.{ .mul = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .Slash => cfg.append(.{ .div = .{ .dest = reg, .l = lhs, .r = rhs } }),
 
-                .Less => chunk.append(.{ .cmp_lt = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .LessEq => chunk.append(.{ .cmp_le = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .Greater => chunk.append(.{ .cmp_gt = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .GreaterEq => chunk.append(.{ .cmp_ge = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .Less => cfg.append(.{ .cmp_lt = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .LessEq => cfg.append(.{ .cmp_le = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .Greater => cfg.append(.{ .cmp_gt = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .GreaterEq => cfg.append(.{ .cmp_ge = .{ .dest = reg, .l = lhs, .r = rhs } }),
 
-                .EqualEqual => chunk.append(.{ .cmp_eq = .{ .dest = reg, .l = lhs, .r = rhs } }),
-                .NotEqual => chunk.append(.{ .cmp_ne = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .EqualEqual => cfg.append(.{ .cmp_eq = .{ .dest = reg, .l = lhs, .r = rhs } }),
+                .NotEqual => cfg.append(.{ .cmp_ne = .{ .dest = reg, .l = lhs, .r = rhs } }),
 
                 else => unreachable,
             };
             break :reg reg;
         },
-        .String => |v| self.emit_as_constant(chunk, .{ .string = v }),
-        .Int => |v| self.emit_as_constant(chunk, .{ .int = v }),
-        .Float => |v| self.emit_as_constant(chunk, .{ .float = v }),
-        .Bool => |v| self.emit_as_constant(chunk, .{ .bool = v }),
+        .String => |v| self.emit_as_constant(cfg, .{ .string = v }),
+        .Int => |v| self.emit_as_constant(cfg, .{ .int = v }),
+        .Float => |v| self.emit_as_constant(cfg, .{ .float = v }),
+        .Bool => |v| self.emit_as_constant(cfg, .{ .bool = v }),
         .Ident => |v| reg: {
-            const reg = chunk.reg();
+            const reg = cfg.reg();
 
             if (UIR.Builtin.fromString(v.text)) |builtin| {
-                _ = chunk.append(.{ .load_builtin = .{
+                cfg.append(.{ .load_builtin = .{
                     .dest = reg,
                     .builtin = builtin,
                 } });
             } else {
-                self.load_variable(chunk, v.text, reg);
+                self.load_variable(cfg, v.text, reg);
             }
 
             break :reg reg;
         },
         .FnCall => |n| reg: {
-            const @"fn" = self.emit_expr(chunk, n.@"fn");
+            const @"fn" = self.emit_expr(cfg, n.@"fn");
 
             var args: std.ArrayList(UIR.Ref) = .init(self.allocator);
 
             for (n.args.items) |arg| {
-                args.append(self.emit_expr(chunk, arg)) catch unreachable;
+                args.append(self.emit_expr(cfg, arg)) catch unreachable;
             }
 
-            const reg = chunk.reg();
-            _ = chunk.append(.{ .call = .{
+            const reg = cfg.reg();
+            cfg.append(.{ .call = .{
                 .dest = reg,
                 .@"fn" = @"fn",
                 .args = args,
@@ -445,17 +470,17 @@ fn emit_expr(
             break :reg reg;
         },
         .FnDecl => |_| reg: {
-            var body = UIR.Chunk.make(self.allocator);
+            var bodycfg = CFGGen.make(self.allocator);
 
-            self.emit_fn_decl(&body, node);
+            self.emit_fn_decl(&bodycfg, node);
 
             const index = self.code.add_decl(.{
-                .chunk = body,
+                .cfg = bodycfg.graph,
                 .mode = .Fn,
             });
 
-            const reg = chunk.reg();
-            _ = chunk.append(.{ .load_decl = .{
+            const reg = cfg.reg();
+            cfg.append(.{ .load_decl = .{
                 .dest = reg,
                 .index = index,
             } });
@@ -463,56 +488,54 @@ fn emit_expr(
             break :reg reg;
         },
         .Struct => |n| reg: {
-            const reg = chunk.reg();
-            const inst = chunk.append(.{ .struct_decl = .{ .dest = reg, .len = 0 } });
+            const reg = cfg.reg();
+            cfg.append(.{ .create_struct = .{ .dest = reg } });
 
-            const start = chunk.len();
-
-            var field_len: usize = 0;
             for (n.fields.items) |field| _ = switch (field.*) {
                 .Field => |f| {
-                    const ty = self.emit_expr(chunk, f.type orelse unreachable);
-                    _ = chunk.append(.{ .create_field = .{
-                        .index = field_len,
+                    const ident = getIdent(f.ident);
+                    const ty = self.emit_expr(cfg, f.type orelse unreachable);
+                    cfg.append(.{ .append_field = .{
+                        .decl = reg,
+                        .name = ident,
                         .ty = ty,
                     } });
-                    field_len += 1;
                 },
-                .ConstDecl => self.emit_statement(chunk, field),
+                .ConstDecl => self.emit_statement(cfg, field),
                 else => |f| @panic(@tagName(f)),
             };
 
-            chunk.get(inst).struct_decl.len = chunk.len() - start;
-
             break :reg reg;
         },
-        .Comptime => |n| self.emit_as_comptime_block(chunk, n),
+        .Comptime => |n| self.emit_as_comptime_block(cfg, n),
 
         .Scope => |lst| reg: {
-            const reg = chunk.reg();
-            const inst = chunk.append(.{ .block = .{
-                .dest = reg,
-                .len = 0,
-            } });
+            const reg = cfg.reg();
+            cfg.push_return_stack(reg);
 
-            const start = chunk.len();
+            const block = cfg.branch(false);
+
+            cfg.set_terminator(.{ .goto = block });
+            cfg.set_current(block);
 
             self.scopes.down();
 
-            for (lst.items) |n| _ = self.emit_statement(chunk, n);
+            for (lst.items) |n| self.emit_statement(cfg, n);
 
             self.scopes.up();
 
-            chunk.get(inst).block.len = chunk.len() - start;
+            const after = cfg.branch(false);
+            cfg.set_terminator(.{ .goto = after });
+            cfg.set_current(after);
 
             break :reg reg;
         },
 
         .If => |n| reg: {
-            const cond = self.emit_expr(chunk, n.cond);
+            const cond = self.emit_expr(cfg, n.cond);
 
-            const reg = chunk.reg();
-            const inst = chunk.append(.{ .if_expr = .{
+            const reg = cfg.reg();
+            const inst = cfg.append(.{ .if_expr = .{
                 .dest = reg,
                 .cond = cond,
                 .true_len = 0,
@@ -520,27 +543,27 @@ fn emit_expr(
             } });
 
             {
-                const start = chunk.len();
+                const start = cfg.len();
                 self.scopes.down();
 
                 for (n.true.Scope.items) |item| {
-                    self.emit_statement(chunk, item);
+                    self.emit_statement(cfg, item);
                 }
 
                 self.scopes.up();
-                chunk.get(inst).if_expr.true_len = chunk.len() - start;
+                cfg.get(inst).if_expr.true_len = cfg.len() - start;
             }
 
             {
-                const start = chunk.len();
+                const start = cfg.len();
                 self.scopes.down();
 
                 for (n.false.Scope.items) |item| {
-                    self.emit_statement(chunk, item);
+                    self.emit_statement(cfg, item);
                 }
 
                 self.scopes.up();
-                chunk.get(inst).if_expr.false_len = chunk.len() - start;
+                cfg.get(inst).if_expr.false_len = cfg.len() - start;
             }
 
             break :reg reg;
@@ -640,5 +663,62 @@ pub const Scopes = struct {
         {
             _ = scopes.stack.pop();
         }
+    }
+};
+
+const CFGGen = struct {
+    graph: UIR.CFG,
+    register_count: usize = 0,
+    current_block: UIR.Loc,
+    implicit_return_stack: std.ArrayList(UIR.Ref),
+
+    fn make(allocator: Allocator) CFGGen {
+        var graph = UIR.CFG.make(allocator);
+
+        return CFGGen{
+            .graph = graph,
+            .current_block = graph.append(false),
+            .implicit_return_stack = .init(allocator),
+        };
+    }
+
+    pub fn deinit(gen: *CFGGen) void {
+        gen.implicit_return_stack.deinit();
+    }
+
+    fn reg(gen: *CFGGen) UIR.Ref {
+        const idx = gen.register_count;
+        gen.register_count += 1;
+        return @enumFromInt(idx);
+    }
+
+    fn push_return_stack(gen: *CFGGen, ref: UIR.Ref) void {
+        gen.implicit_return_stack.append(ref) catch unreachable;
+    }
+
+    fn pop_return_stack(gen: *CFGGen) UIR.Ref {
+        return gen.implicit_return_stack.pop();
+    }
+
+    fn set_current(gen: *CFGGen, loc: UIR.Loc) void {
+        gen.current_block = loc;
+    }
+
+    fn get_current(gen: *CFGGen) *UIR.BasicBlock {
+        return gen.graph.get(gen.current_block);
+    }
+
+    fn branch(gen: *CFGGen, @"comptime": bool) UIR.Loc {
+        return gen.graph.append(@"comptime");
+    }
+
+    fn set_terminator(gen: *CFGGen, term: UIR.Terminator) void {
+        if (gen.get_current().terminator != null) {
+            gen.get_current().terminator = term;
+        }
+    }
+
+    fn append(gen: *CFGGen, inst: UIR.Instruction) void {
+        gen.get_current().append(inst);
     }
 };
