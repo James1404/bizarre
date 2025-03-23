@@ -535,15 +535,22 @@ fn emit_expr(
             const cond = self.emit_expr(cfg, n.cond);
 
             const reg = cfg.reg();
-            const inst = cfg.append(.{ .if_expr = .{
-                .dest = reg,
+            cfg.push_return_stack(reg);
+
+            const true_branch = cfg.branch(false);
+            const false_branch = cfg.branch(false);
+            const after = cfg.branch(false);
+
+            cfg.set_terminator(.{ .@"if" = .{
                 .cond = cond,
-                .true_len = 0,
-                .false_len = 0,
+                .true = true_branch,
+                .false = false_branch,
             } });
 
             {
-                const start = cfg.len();
+                cfg.set_current(true_branch);
+                cfg.set_terminator(.{ .goto = after });
+
                 self.scopes.down();
 
                 for (n.true.Scope.items) |item| {
@@ -551,11 +558,12 @@ fn emit_expr(
                 }
 
                 self.scopes.up();
-                cfg.get(inst).if_expr.true_len = cfg.len() - start;
             }
 
             {
-                const start = cfg.len();
+                cfg.set_current(true_branch);
+                cfg.set_terminator(.{ .goto = after });
+
                 self.scopes.down();
 
                 for (n.false.Scope.items) |item| {
@@ -563,8 +571,9 @@ fn emit_expr(
                 }
 
                 self.scopes.up();
-                cfg.get(inst).if_expr.false_len = cfg.len() - start;
             }
+
+            cfg.set_current(after);
 
             break :reg reg;
         },
@@ -668,18 +677,19 @@ pub const Scopes = struct {
 
 const CFGGen = struct {
     graph: UIR.CFG,
-    register_count: usize = 0,
     current_block: UIR.Loc,
     implicit_return_stack: std.ArrayList(UIR.Ref),
 
     fn make(allocator: Allocator) CFGGen {
-        var graph = UIR.CFG.make(allocator);
-
-        return CFGGen{
-            .graph = graph,
-            .current_block = graph.append(false),
+        var self = CFGGen{
+            .graph = UIR.CFG.make(allocator),
+            .current_block = undefined,
             .implicit_return_stack = .init(allocator),
         };
+
+        self.current_block = self.graph.append(false);
+
+        return self;
     }
 
     pub fn deinit(gen: *CFGGen) void {
@@ -687,9 +697,7 @@ const CFGGen = struct {
     }
 
     fn reg(gen: *CFGGen) UIR.Ref {
-        const idx = gen.register_count;
-        gen.register_count += 1;
-        return @enumFromInt(idx);
+        return gen.graph.reg();
     }
 
     fn push_return_stack(gen: *CFGGen, ref: UIR.Ref) void {

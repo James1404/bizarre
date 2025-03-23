@@ -4,7 +4,7 @@ const UIR = @import("uir.zig");
 const TIR = @import("tir.zig");
 
 allocator: Allocator,
-call_stack: std.ArrayList(StackFrame),
+call_stack: std.ArrayList(Frame),
 declarations: []?Value,
 uir: UIR,
 out: TIR,
@@ -48,7 +48,7 @@ pub fn push_frame(
     decl: UIR.Decl.Index,
     args: ?std.ArrayList(Value),
 ) void {
-    const reg_count = self.uir.get_decl(decl).chunk.register_count;
+    const reg_count = self.uir.get_decl(decl).cfg.register_count;
     self.call_stack.append(.{
         .allocator = self.allocator,
         .decl = decl,
@@ -68,8 +68,9 @@ pub fn eval(self: *Self) void {
         const frame = &self.call_stack.items[self.call_stack.items.len - 1];
         const decl = self.uir.get_decl(frame.decl);
 
-        const inst = decl.chunk.get(frame.ip);
-        frame.ip += 1;
+        const block = decl.cfg.get(frame.block);
+        const inst = block.get(frame.statement);
+        frame.statement += 1;
 
         switch (inst.*) {
             .nop => std.debug.panic("nop", .{}),
@@ -218,8 +219,6 @@ pub fn eval(self: *Self) void {
 
                 // TODO: Implement return value
             },
-
-            .goto => |n| frame.ip = n.loc,
 
             else => std.debug.panic(
                 "Sema: \"{s}\" not implemented",
@@ -489,18 +488,20 @@ pub const Value = union(enum) {
     }
 };
 
-const StackFrame = struct {
+const Frame = struct {
     allocator: Allocator,
 
     decl: UIR.Decl.Index,
     args: std.ArrayList(Value),
     registers: []Value,
-    ip: usize = 0,
+
+    block: UIR.Loc = @enumFromInt(0),
+    statement: usize = 0,
 
     argc: usize = 0,
     return_type: Value = .void_type,
 
-    pub fn deinit(frame: *StackFrame) void {
+    pub fn deinit(frame: *Frame) void {
         frame.args.deinit();
         frame.allocator.free(frame.registers);
     }

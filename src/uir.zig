@@ -56,7 +56,7 @@ pub fn print(self: *Self, writer: anytype) !void {
         for (decl.cfg.blocks.items, 0..) |*bb, bbidx| {
             try writer.print("\tblock {d} {{\n", .{bbidx});
 
-            try bb.print(self, writer, 3);
+            try bb.print(self, writer, 2);
 
             try writer.print("\t}}\n\n", .{});
         }
@@ -305,7 +305,7 @@ pub const Terminator = union(enum) {
         _: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        switch (self.*) {
+        switch (self) {
             .goto => |v| try writer.print("goto {s}", .{v}),
             .@"if" => |v| try writer.print(
                 "if {s} then {s} else {s}",
@@ -332,6 +332,10 @@ pub const BasicBlock = struct {
 
     pub fn append(bb: *BasicBlock, inst: Instruction) void {
         bb.instructions.append(inst) catch unreachable;
+    }
+
+    pub fn get(bb: *BasicBlock, idx: usize) *Instruction {
+        return &bb.instructions.items[idx];
     }
 
     pub fn print(
@@ -438,6 +442,7 @@ pub const BasicBlock = struct {
 pub const CFG = struct {
     allocator: Allocator,
     blocks: std.ArrayList(BasicBlock),
+    register_count: usize = 0,
 
     pub fn make(allocator: Allocator) CFG {
         return CFG{
@@ -464,6 +469,12 @@ pub const CFG = struct {
 
     pub fn get(graph: *CFG, loc: Loc) *BasicBlock {
         return &graph.blocks.items[@intFromEnum(loc)];
+    }
+
+    pub fn reg(graph: *CFG) Ref {
+        const idx = graph.register_count;
+        graph.register_count += 1;
+        return @enumFromInt(idx);
     }
 };
 
